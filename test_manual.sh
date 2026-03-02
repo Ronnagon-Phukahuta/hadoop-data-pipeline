@@ -31,7 +31,7 @@ hdfs_cmd()  {
     docker exec namenode hdfs dfs "$@"
 }
 hive_cmd()  { docker exec hive-server hive -e "$1" 2>/dev/null | tail -1; }
-spark_run() { docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_test_quality.py > /tmp/pipeline_out.log 2>&1; }
+spark_run() { docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_quality.py > /tmp/pipeline_out.log 2>&1; }
 
 RAW_BASE="/datalake/raw/finance-itsc"
 STAGING="/datalake/staging/finance-itsc_wide"
@@ -50,6 +50,7 @@ date,total_amount,details,general_fund_admin_wifi_grant,compensation_budget,expe
 all-year-budget,0,budget,1000000.0,100000,100000,100000,100000,100000,50000,50000,50000,50000,50000,0,0,0,0,0,0,0,50000,50000,0,0,0,0,0,0,0,0,0,0,0,0,0,9999
 2024-01,0,spent,500000.0,50000,50000,50000,50000,50000,25000,25000,25000,25000,25000,0,0,0,0,0,0,0,25000,25000,0,0,0,0,0,0,0,0,0,0,0,0,0,9999
 2024-02,0,remaining,500000.0,50000,50000,50000,50000,50000,25000,25000,25000,25000,25000,0,0,0,0,0,0,0,25000,25000,0,0,0,0,0,0,0,0,0,0,0,0,0,9999
+CSV
 
 # CSV มี null date
 cat > /tmp/test_bad.csv << 'CSV'
@@ -197,7 +198,7 @@ info "หยุด datanode..."
 docker stop datanode
 
 info "รัน pipeline ขณะ datanode หยุด (timeout 60s)..."
-timeout 60 docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_test_quality.py > /tmp/pipeline_retry.log 2>&1
+timeout 60 docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_quality.py > /tmp/pipeline_retry.log 2>&1
 
 info "Start datanode กลับ..."
 docker start datanode
@@ -233,7 +234,8 @@ docker exec hive-server hive -e "
     ALTER TABLE finance_itsc_wide DROP IF EXISTS PARTITION (year=$BAD_YEAR);
     ALTER TABLE finance_itsc_long DROP IF EXISTS PARTITION (year=$TEST_YEAR);
 " 2>/dev/null
-rm -f /tmp/test_good.csv /tmp/test_bad.csv /tmp/pipeline*.log
+rm -f /tmp/pipeline*.log
+docker exec namenode bash -c "rm -f /tmp/test_good.csv /tmp/test_bad.csv /tmp/pipeline*.log"
 info "Cleanup เสร็จ"
 
 # =============================================================================

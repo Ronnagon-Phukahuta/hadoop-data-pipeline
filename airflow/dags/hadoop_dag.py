@@ -113,7 +113,7 @@ with DAG(
     dag_id="finance_etl_pipeline",
     default_args=default_args,
     start_date=datetime(2026, 1, 1),
-    schedule="*/5 * * * *",
+    schedule="0 0 1 1 *",
     catchup=False,
     tags=["finance", "etl"],
 ) as dag:
@@ -125,7 +125,7 @@ with DAG(
 
     run_pipeline = BashOperator(
         task_id="run_spark_pipeline",
-        bash_command="docker exec spark-master spark-submit /jobs/finance_itsc_pipeline.py",
+        bash_command="docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_quality.py",
     )
 
     notify_success = PythonOperator(

@@ -203,6 +203,7 @@ services:
          - OPENAI_API_KEY=${OPENAI_API_KEY}
          - HIVE_HOST=hive-server
          - HIVE_PORT=10000
+         - COOKIE_SECRET=${COOKIE_SECRET}
       ports:
          - "8501:8501"
       depends_on:

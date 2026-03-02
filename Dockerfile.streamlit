@@ -2,7 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python dependencies (ไม่ใช้ sasl)
 RUN pip install --no-cache-dir \
     streamlit \
     plotly \
@@ -12,10 +11,9 @@ RUN pip install --no-cache-dir \
     thrift-sasl \
     pure-sasl \
     python-dotenv \
-    openai
+    openai \
+    "streamlit-cookies-manager==0.2.0"
 
-# Expose port
 EXPOSE 8501
 
-# Run streamlit
 CMD ["streamlit", "run", "app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]

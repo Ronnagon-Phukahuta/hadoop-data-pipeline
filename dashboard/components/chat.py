@@ -1,8 +1,9 @@
 # components/chat.py
+import time
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils.history import load_chat_history, add_to_history
+from utils.history import load_chat_history, add_to_history, save_feedback, get_stats
 from services.hive_gpt import chat_with_data_full
 
 
@@ -23,6 +24,42 @@ def render_chart(df: pd.DataFrame, chart_type: str, title: str):
         st.plotly_chart(chart, use_container_width=True)
 
     return chart
+
+
+def render_feedback(history_index: int):
+    """แสดงปุ่ม 👍/👎 สำหรับ query ล่าสุด"""
+    feedback_key = f"feedback_{history_index}"
+
+    # ถ้ากด feedback ไปแล้วในครั้งนี้ แสดงขอบคุณแทน
+    if st.session_state.get(feedback_key):
+        icon = "👍" if st.session_state[feedback_key] == "up" else "👎"
+        st.caption(f"{icon} ขอบคุณสำหรับ feedback!")
+        return
+
+    st.caption("ผลลัพธ์ตรงกับที่ต้องการมั้ย?")
+    col1, col2, _ = st.columns([1, 1, 8])
+    with col1:
+        if st.button("👍", key=f"up_{history_index}"):
+            save_feedback(history_index, "up")
+            st.session_state[feedback_key] = "up"
+            st.rerun()
+    with col2:
+        if st.button("👎", key=f"down_{history_index}"):
+            save_feedback(history_index, "down")
+            st.session_state[feedback_key] = "down"
+            st.rerun()
+
+
+def render_stats():
+    """แสดงสถิติ query ด้านบน"""
+    stats = get_stats()
+    if stats["total"] == 0:
+        return
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Query ทั้งหมด", stats["total"])
+    col2.metric("👍 พอใจ", stats["thumbs_up"])
+    col3.metric("👎 ไม่พอใจ", stats["thumbs_down"])
+    col4.metric("เวลาเฉลี่ย", f"{stats['avg_execution_ms']} ms")
 
 
 def render_history_view():
@@ -54,6 +91,16 @@ def render_history_view():
 
         st.markdown(f"**💬 สรุป:** {item['summary']}")
 
+        # แสดง execution time ถ้ามี
+        if item.get("execution_time_ms"):
+            st.caption(f"⏱️ {item['execution_time_ms']} ms")
+
+        # แสดง feedback ที่เคยให้ไว้
+        feedback = item.get("feedback")
+        if feedback:
+            icon = "👍" if feedback == "up" else "👎"
+            st.caption(f"Feedback: {icon}")
+
     if st.button("➕ เริ่ม Chat ใหม่", use_container_width=True):
         st.session_state.current_chat_id = None
         st.session_state.messages = []
@@ -61,21 +108,30 @@ def render_history_view():
 
 
 def process_question(question: str) -> dict:
-    """เรียก GPT+Hive แล้วบันทึก history"""
+    """เรียก GPT+Hive แล้วบันทึก history พร้อม execution time"""
+    start = time.time()
     result = chat_with_data_full(question)
+    execution_time_ms = int((time.time() - start) * 1000)
+
     df = result["df"]
-    add_to_history(
+    history_index = add_to_history(
         question=question,
         sql=result["sql"],
         summary=result["summary"],
         df_json=df.to_json() if len(df) > 0 else "",
-        chart_type=result["chart_type"]
+        chart_type=result["chart_type"],
+        execution_time_ms=execution_time_ms,
     )
+    result["history_index"] = history_index
+    result["execution_time_ms"] = execution_time_ms
     return result
 
 
 def render_chat():
     """แสดง chat ปัจจุบัน + chat input"""
+
+    # Stats
+    render_stats()
 
     # แสดง messages ที่มีอยู่
     for msg in st.session_state.messages:
@@ -88,6 +144,12 @@ def render_chat():
                 st.dataframe(msg["df"], use_container_width=True)
             if "chart" in msg and msg["chart"] is not None:
                 st.plotly_chart(msg["chart"], use_container_width=True)
+            if msg.get("execution_time_ms"):
+                st.caption(f"⏱️ {msg['execution_time_ms']} ms")
+            # feedback ของ message เก่า (ดูได้แต่กดซ้ำไม่ได้)
+            if msg.get("feedback"):
+                icon = "👍" if msg["feedback"] == "up" else "👎"
+                st.caption(f"Feedback: {icon}")
 
     # Process pending question
     if st.session_state.pending_question:
@@ -99,7 +161,6 @@ def render_chat():
         with st.chat_message("user"):
             st.markdown(question)
 
-        # KEY FIX: spinner ต้องอยู่นอก chat_message และนอก expander
         result = None
         error = None
         with st.spinner("กำลังวิเคราะห์..."):
@@ -108,7 +169,6 @@ def render_chat():
             except Exception as e:
                 error = e
 
-        # Render ผลลัพธ์หลัง spinner จบแล้ว
         with st.chat_message("assistant"):
             if error:
                 st.error(f"เกิดข้อผิดพลาด: {error}")
@@ -124,13 +184,19 @@ def render_chat():
                     chart = render_chart(df, result["chart_type"], question)
 
                 st.markdown(f"**💬 สรุป:** {result['summary']}")
+                st.caption(f"⏱️ {result['execution_time_ms']} ms")
+
+                # feedback ปุ่มกดได้
+                render_feedback(result["history_index"])
 
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": f"**💬 สรุป:** {result['summary']}",
                     "sql": result["sql"],
                     "df": df,
-                    "chart": chart
+                    "chart": chart,
+                    "execution_time_ms": result["execution_time_ms"],
+                    "feedback": None,
                 })
 
     # Chat input

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# jobs/finance_itsc_pipeline_test_quality.py
+# jobs/finance_itsc_pipeline_quality.py
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, expr
 from typing import List, Dict
