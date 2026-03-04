@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir \
     pure-sasl \
     python-dotenv \
     openai \
-    "streamlit-cookies-manager==0.2.0"
+    "streamlit-cookies-manager==0.2.0" \
+    openpyxl 
 
 EXPOSE 8501
 
