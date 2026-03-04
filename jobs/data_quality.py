@@ -8,8 +8,9 @@ from logger import get_logger
 
 log = get_logger(__name__)
 
-EXPECTED_COLUMNS = [
-    "date", "total_amount", "details",
+REQUIRED_COLUMNS = ["date", "details", "total_amount"]
+
+AMOUNT_COLUMNS = [
     "general_fund_admin_wifi_grant", "compensation_budget", "expense_budget",
     "material_budget", "utilities", "grant_welfare_health", "grant_ms_365",
     "education_fund_academic_computer_service_salary_staff", "government_staff",
@@ -22,25 +23,24 @@ EXPECTED_COLUMNS = [
     "personnel_development_fund_education_management_support_special_grant",
     "art_preservation_fund_general_grant", "wifi_jumboplus", "firewall",
     "cmu_cloud", "siem", "digital_health", "benefit_access_request_system",
-    "ups", "ups_rent_wifi_care", "uplift", "open_data"
+    "ups", "ups_rent_wifi_care", "uplift", "open_data",
 ]
-
-AMOUNT_COLUMNS = [c for c in EXPECTED_COLUMNS if c not in ["date", "details", "total_amount"]]
 
 
 def check_schema(df: DataFrame, filepath: str) -> Tuple[bool, List[str]]:
+    """
+    Fatal: ขาด required columns (date, details, total_amount)
+    Warning: extra columns → schema evolution ปกติ ไม่ต้อง fail
+    """
     errors = []
-    missing = set(EXPECTED_COLUMNS) - set(df.columns)
-    extra = set(df.columns) - set(EXPECTED_COLUMNS)
-    if missing:
-        errors.append(f"❌ Missing columns: {sorted(missing)}")
-    if extra:
-        errors.append(f"⚠️  Extra columns: {sorted(extra)}")
-    has_fatal = any("❌" in e for e in errors)
-    return not has_fatal, errors
+    missing_required = set(REQUIRED_COLUMNS) - set(df.columns)
+    if missing_required:
+        errors.append(f"❌ Missing required columns: {sorted(missing_required)}")
+    return len(errors) == 0, errors
 
 
 def check_null_values(df: DataFrame) -> Tuple[bool, List[str]]:
+    """Fatal: date หรือ details เป็น null"""
     errors = []
     for c in ["date", "details"]:
         if c not in df.columns:
@@ -52,34 +52,49 @@ def check_null_values(df: DataFrame) -> Tuple[bool, List[str]]:
 
 
 def check_date_format(df: DataFrame) -> Tuple[bool, List[str]]:
+    """
+    Fatal: ไม่มี all-year-budget เลย
+    Warning: date format แปลก
+    """
     errors = []
-    dates = [r.date for r in df.select("date").distinct().collect()]
-    required_special = {"all-year-budget", "total spent", "remaining"}
-    missing_special = required_special - set(dates)
-    if missing_special:
-        errors.append(f"❌ Missing required rows: {missing_special}")
+    if "date" not in df.columns:
+        return True, []
+
+    dates = {str(r.date) for r in df.select("date").distinct().collect() if r.date}
+
+    if "all-year-budget" not in dates:
+        errors.append("❌ ไม่พบ row 'all-year-budget' ใน column date")
+
+    special = {"all-year-budget", "total spent", "remaining"}
     pattern = re.compile(r"^\d{4}-\d{2}$")
-    invalid = [d for d in dates if d not in required_special and not pattern.match(str(d))]
+    invalid = [d for d in dates if d not in special and not pattern.match(d)]
     if invalid:
-        errors.append(f"❌ Invalid date format: {invalid}")
-    return len(errors) == 0, errors
+        errors.append(f"⚠️  date format ไม่ตรง: {invalid[:5]}")
+
+    has_fatal = any("❌" in e for e in errors)
+    return not has_fatal, errors
 
 
 def check_total_amount(df: DataFrame) -> Tuple[bool, List[str]]:
+    """Warning: total_amount ไม่ตรงกับ sum ของ amount columns (±1%)"""
     errors = []
     if "total_amount" not in df.columns:
         return True, []
+
     amount_cols = [c for c in AMOUNT_COLUMNS if c in df.columns]
     if not amount_cols:
         return True, []
+
     sum_expr = " + ".join([f"COALESCE(`{c}`, 0)" for c in amount_cols])
     df_check = df.filter(
         col("date").rlike(r"^\d{4}-\d{2}$") | (col("date") == "all-year-budget")
     ).selectExpr(
         "date", "details", "total_amount", f"({sum_expr}) AS computed_sum"
     ).filter(
-        spark_abs(col("total_amount") - col("computed_sum")) > col("total_amount") * 0.01
+        (col("total_amount") > 0) &
+        (spark_abs(col("total_amount") - col("computed_sum")) > col("total_amount") * 0.01)
     )
+
     for row in df_check.limit(3).collect():
         errors.append(
             f"⚠️  total_amount mismatch at {row.date}/{row.details}: "
@@ -89,16 +104,23 @@ def check_total_amount(df: DataFrame) -> Tuple[bool, List[str]]:
 
 
 def check_remaining_decreasing(df: DataFrame) -> Tuple[bool, List[str]]:
+    """Warning: ยอด remaining เพิ่มขึ้นผิดปกติ"""
     errors = []
+    if "details" not in df.columns or "date" not in df.columns:
+        return True, []
+
     rows = df.filter(
         (col("details") == "remaining") & col("date").rlike(r"^\d{4}-\d{2}$")
     ).select("date", "total_amount").orderBy("date").collect()
+
     for i in range(1, len(rows)):
-        if rows[i].total_amount > rows[i-1].total_amount:
-            errors.append(
-                f"⚠️  Remaining เพิ่มขึ้นที่ {rows[i].date}: "
-                f"{rows[i-1].total_amount:.0f} → {rows[i].total_amount:.0f}"
-            )
+        prev, curr = rows[i-1], rows[i]
+        if curr.total_amount is not None and prev.total_amount is not None:
+            if curr.total_amount > prev.total_amount:
+                errors.append(
+                    f"⚠️  Remaining เพิ่มขึ้นที่ {curr.date}: "
+                    f"{prev.total_amount:.0f} → {curr.total_amount:.0f}"
+                )
     return len(errors) == 0, errors
 
 
@@ -110,15 +132,15 @@ def run_quality_checks(df: DataFrame, filepath: str) -> Tuple[bool, str]:
     passed = True
 
     checks = [
-        ("Schema", check_schema(df, filepath)),
-        ("Null Values", check_null_values(df)),
-        ("Date Format", check_date_format(df)),
-        ("Total Amount", check_total_amount(df)),
+        ("Schema",               check_schema(df, filepath)),
+        ("Null Values",          check_null_values(df)),
+        ("Date Format",          check_date_format(df)),
+        ("Total Amount",         check_total_amount(df)),
         ("Remaining Decreasing", check_remaining_decreasing(df)),
     ]
 
     for name, (ok, errors) in checks:
-        if ok:
+        if ok and not errors:
             log.info("Check passed", file=filename, check=name)
         else:
             has_fatal = any("❌" in e for e in errors)
@@ -137,7 +159,7 @@ def run_quality_checks(df: DataFrame, filepath: str) -> Tuple[bool, str]:
 
     report = f"File: {filepath}\n\n"
     if all_errors:
-        report += "ERRORS:\n" + "\n".join(all_errors) + "\n\n"
+        report += "ERRORS (Fatal):\n" + "\n".join(all_errors) + "\n\n"
     if all_warnings:
         report += "WARNINGS:\n" + "\n".join(all_warnings)
 

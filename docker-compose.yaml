@@ -78,6 +78,7 @@ services:
       volumes:
          - ./hive-site.xml:/spark/conf/hive-site.xml
          - ./jobs:/jobs
+         - ./tests:/jobs/tests
 
    spark-worker:
       image: bde2020/spark-worker:2.4.5-hadoop2.7

@@ -79,3 +79,7 @@ dashboard/chat_history.json
 # SSL Certificates (if used for local development)
 certs/server.key
 certs/server.crt
+
+jobs/reports/
+reports/
+dashboard/history/auth_tokens.json

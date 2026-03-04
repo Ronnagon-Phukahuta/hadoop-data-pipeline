@@ -29,21 +29,19 @@ jobs:
       - name: Run ruff
         run: ruff check . --output-format=github --exclude backup_file
 
-  # ─────────────────────────────────────────
-  # 2. Test
+# ─────────────────────────────────────────
+  # 2a. Test (non-Spark) — Python 3.12
   # ─────────────────────────────────────────
   test:
     name: Test (pytest + coverage)
     runs-on: ubuntu-latest
     needs: lint
-
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       HIVE_HOST: "localhost"
       HIVE_PORT: "10000"
       HIVE_DATABASE: "finance_itsc"
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -57,8 +55,7 @@ jobs:
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          restore-keys: ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
@@ -66,9 +63,10 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-cov pytest-mock
 
-      - name: Run pytest
+      - name: Run pytest (non-Spark)
         run: |
           pytest tests/ -v \
+            --ignore=tests/test_pipeline_spark.py \
             --cov=. \
             --cov-report=term-missing \
             --cov-report=xml \
@@ -82,12 +80,47 @@ jobs:
           path: coverage.xml
 
   # ─────────────────────────────────────────
+  # 2b. Test Spark — ใน Docker (Python 3.7)
+  # ─────────────────────────────────────────
+  test-spark:
+    name: Test Spark (Docker)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Spark image
+        run: |
+          docker build -f Dockerfile.spark -t spark-test:ci .
+
+      - name: Run Spark tests
+        run: |
+          docker run --rm \
+            -v $(pwd)/jobs:/jobs \
+            -v $(pwd)/tests:/jobs/tests \
+            spark-test:ci \
+            bash -c "
+              python3 -m pip install pytest pytest-html -q &&
+              cd /jobs &&
+              PYTHONPATH=/spark/python:/spark/python/lib/py4j-0.10.7-src.zip \
+              python3 -m pytest tests/test_pipeline_spark.py -v \
+                --junitxml=reports/junit.xml
+            "
+
+      - name: Upload Spark test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spark-test-report
+          path: reports/junit.xml
+
+  # ─────────────────────────────────────────
   # 3. Docker build (Spark)
   # ─────────────────────────────────────────
   docker-spark:
     name: Docker Build (Spark)
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, test-spark]
     steps:
       - uses: actions/checkout@v4
 

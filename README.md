@@ -88,9 +88,12 @@ HADOOP_NEW/
 │   └── Dockerfile.airflow
 ├── dashboard/
 │   ├── components/         # Streamlit UI components
+│   ├── pages/
+│   │   ├── upload.py       # Excel upload + column mapping
+│   │   └── monitoring.py   # Pipeline status + DQ + versions
 │   ├── services/           # Hive + GPT integration
 │   ├── utils/              # History, helpers
-│   ├── app.py              # Entry point
+│   ├── app.py              # Entry point (NLP query)
 │   ├── auth.py             # Authentication
 │   └── config.py           # Table schema, category mapping
 ├── jobs/
@@ -109,6 +112,7 @@ HADOOP_NEW/
 ├── data/                   # Raw data files (ไม่ commit)
 ├── docker-compose.yaml
 ├── nginx.conf
+├── run_tests.sh            # Script รัน Spark tests ใน Docker
 └── .env                    # ไม่ commit — ดู .env.example
 ```
 
@@ -162,11 +166,11 @@ docker compose up -d
 **6. Upload ข้อมูลเข้า HDFS**
 ```bash
 # สร้าง directory structure
-docker exec namenode hdfs dfs -mkdir -p /datalake/raw/finance-itsc/year=2024
+docker exec namenode hdfs dfs -mkdir -p /datalake/raw/finance_itsc/year=2024
 
 # Upload CSV
 docker exec -i namenode hdfs dfs -put /data/finance_itsc_2024.csv \
-    /datalake/raw/finance-itsc/year=2024/
+    /datalake/raw/finance_itsc/year=2024/
 ```
 
 ## Environment Variables
@@ -175,6 +179,10 @@ docker exec -i namenode hdfs dfs -put /data/finance_itsc_2024.csv \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `OPENAI_API_KEY` | — | GPT column mapping, NLP query, Excel conversion |
+| `GMAIL_APP_PASSWORD` | — | Email alerts เมื่อ pipeline fail |
+| `SECRET_KEY` | — | Streamlit session encryption |
+| `WEBHDFS_URL` | `http://namenode:50070` | Dashboard เชื่อมต่อ HDFS |
 | `ETL_MAX_RETRIES` | `3` | จำนวนครั้ง retry เมื่อ step fail |
 | `ETL_RETRY_DELAY` | `5` | วินาทีรอก่อน retry (x2 ทุกรอบ) |
 | `KEEP_VERSIONS` | `5` | จำนวน version ที่เก็บต่อปี |
@@ -184,11 +192,94 @@ docker exec -i namenode hdfs dfs -put /data/finance_itsc_2024.csv \
 
 | Service | URL | หมายเหตุ |
 |---------|-----|---------|
-| Dashboard | https://localhost | หน้าหลัก |
+| Dashboard | https://localhost | หน้าหลัก NLP Query |
+| Upload | https://localhost/upload | Excel upload + column mapping |
+| Monitoring | https://localhost/monitoring | Pipeline status + DQ |
 | Airflow | http://localhost:8088 | Pipeline management |
 | Spark Master | http://localhost:8080 | หรือ https://localhost/spark/ |
 | HDFS NameNode | http://localhost:9870 | |
 | Hive Server | localhost:10000 | JDBC |
+
+## Dashboard
+
+Dashboard แบ่งเป็น 3 ส่วนหลัก เข้าถึงได้ที่ `https://localhost`
+
+### หน้าหลัก — NLP Query
+
+ถามคำถามเกี่ยวกับงบประมาณเป็นภาษาไทยได้เลย GPT จะแปลงเป็น HiveQL และแสดงผลเป็นกราฟอัตโนมัติ
+
+```
+ตัวอย่างคำถาม:
+- "ค่าใช้สอยปี 2024 เป็นเท่าไร"
+- "หมวดไหนมียอดคงเหลือน้อยที่สุด"
+- "เปรียบเทียบค่าใช้จ่ายแต่ละเดือน"
+```
+
+**กฎสำคัญของ query engine:**
+- `details = 'remaining'` คือ running balance — ดึงเฉพาะเดือนล่าสุดเสมอ ห้าม SUM
+- `details = 'budget'` และ `details = 'spent'` — SUM ได้ปกติ
+- `date` เป็น reserved keyword — pipeline จะใส่ backtick ให้อัตโนมัติ
+
+---
+
+### หน้า Upload — Excel → HDFS
+
+**4 ขั้นตอน:**
+
+**Step 1 — เลือก Folder ปลายทาง**
+
+Browse HDFS `/datalake/raw` ผ่าน UI ได้เลย มี breadcrumb navigation และสร้าง folder ใหม่ได้โดยไม่ต้องใช้ command line ระบบจะ infer ชื่อ Hive table จากชื่อ folder อัตโนมัติ
+
+**Step 2 — Upload Excel**
+
+- รองรับ `.xlsx` พร้อมเลือก sheet ได้
+- กด **🤖 แปลงด้วย GPT** — GPT จะจัดการ merged cells, header หลายชั้น, และ format ให้เป็น CSV สะอาด
+- Preview ผลลัพธ์ 10 rows แรกก่อน proceed
+
+**Step 3 — Column Mapping**
+
+ระบบเปรียบเทียบ columns ใน CSV กับ Hive schema อัตโนมัติ:
+
+| สถานะ | ความหมาย |
+|-------|----------|
+| ✅ ตรงกัน | ชื่อ column ตรงกับ Hive ทุกตัว |
+| 🔀 Remap | user เลือก map CSV column → Hive column อื่น |
+| 🆕 สร้างใหม่ | column ใหม่ที่ยังไม่มีใน Hive — pipeline จะ `ALTER TABLE` เพิ่มให้อัตโนมัติตอนรัน |
+| `null` | Hive column ที่ไม่มีใน CSV — จะถูก set เป็น null |
+
+ชื่อ column แต่ละตัวแสดงทั้งภาษาไทยและชื่อจริงคู่กัน (GPT แปลให้อัตโนมัติ) critical columns ที่ขาดไม่ได้ (`date`, `details`) จะ block การ upload ทันที
+
+**Step 4 — Confirm Upload**
+
+สรุป mapping ทั้งหมดก่อน upload จริง ไฟล์ที่มีชื่อภาษาไทยจะถูก sanitize เป็น `{table_name}_{timestamp}.csv` อัตโนมัติ หลัง upload สำเร็จ Airflow จะ pick up ไฟล์ตาม schedule
+
+---
+
+### หน้า Monitoring
+
+แบ่งเป็น 3 section:
+
+**🚀 Pipeline Runs**
+
+ตารางแสดง 20 run ล่าสุด พร้อม metrics รวม:
+
+| Metric | ความหมาย |
+|--------|----------|
+| Run ทั้งหมด | จำนวนครั้งที่ pipeline trigger |
+| ✅ Success | ทุกปีสำเร็จ |
+| ⚠️ Partial | บางปีสำเร็จ บางปี fail |
+| ❌ Failed | ทุกปี fail |
+| เวลาเฉลี่ย | duration เฉลี่ยต่อ run (วินาที) |
+
+**🔍 Data Quality**
+
+Pass/Fail rate แยกตาม check type แสดงเป็น bar chart และ pie chart พร้อม pass rate รวม
+
+**📦 Version History**
+
+ตารางแสดงทุก snapshot ที่บันทึกไว้ พร้อม rows count และ checksum ต่อ version กด **🔄 Refresh** ที่มุมบนเพื่ออัพเดทข้อมูลล่าสุด
+
+---
 
 ## ETL Pipeline
 
@@ -300,7 +391,7 @@ restore_version(
     version_id="v_20260215_090000",
     year=2024,
     target_table="finance_itsc_wide",
-    target_path="hdfs://namenode:8020/datalake/staging/finance-itsc_wide",
+    target_path="hdfs://namenode:8020/datalake/staging/finance_itsc_wide",
 )
 ```
 
@@ -308,21 +399,96 @@ restore_version(
 
 ## Running Tests
 
-```bash
-# รัน test ทั้งหมด
-pytest tests/ -v
+Tests แบ่งเป็น 2 กลุ่ม — non-Spark รันบน Python ปกติ, Spark tests รันใน Docker
 
-# รัน test เฉพาะ module
-pytest tests/test_atomic_write.py -v
-pytest tests/test_versioning.py -v
+**Non-Spark tests (เร็ว ~5 วินาที):**
+```bash
+pytest tests/ --ignore=tests/test_pipeline_spark.py -v
 ```
 
-**Test coverage:**
+**Spark tests (รันใน Docker container):**
+```bash
+./run_tests.sh
+# หรือเฉพาะไฟล์
+./run_tests.sh tests/test_pipeline_spark.py
+# หรือเฉพาะ test เดียว
+./run_tests.sh tests/test_pipeline_spark.py::TestWideToLong::test_basic_row_count
+```
+
+`run_tests.sh` จะ copy reports กลับมาที่ `./reports/` อัตโนมัติ
+
+> **หมายเหตุ:** Spark tests ต้องรันใน `spark-master` container เท่านั้น เพราะ base image (`bde2020/spark-master:2.4.5-hadoop2.7`) ใช้ Python 3.7 ซึ่ง compatible กับ PySpark บน Linux
+
+**Test coverage ทั้งหมด:**
 
 | Test file | ทดสอบอะไร |
 |-----------|-----------|
 | `test_atomic_write.py` | Swap pattern, retry, rollback, ปีอื่นไม่โดนแตะ |
 | `test_versioning.py` | Create snapshot, list versions, cleanup, restore |
+| `test_etl.py` | CSV parsing, year injection, Thai Buddhist calendar |
+| `test_category_mapping.py` | Column mapping, schema diff, critical columns |
+| `test_sql_safety.py` | SQL injection, reserved keyword handling |
+| `test_pipeline_spark.py` | Wide→Long transform, String→Double cast, PART 2 recovery |
+
+## CI/CD Pipeline
+
+GitHub Actions รัน 6 jobs อัตโนมัติทุกครั้งที่ push:
+
+```
+push → lint → test (non-Spark)  ──┬── docker-spark
+                                   ├── docker-streamlit
+              test-spark (Docker) ─┤── docker-compose-validate
+                                   └── airflow-dag-validate
+```
+
+| Job | Runtime | ทำอะไร |
+|-----|---------|--------|
+| **lint** | Python 3.12 | `ruff check` ทุกไฟล์ |
+| **test** | Python 3.12 | pytest non-Spark + coverage report |
+| **test-spark** | Docker (Python 3.7) | pytest `test_pipeline_spark.py` ใน Spark container |
+| **docker-spark** | — | Build `Dockerfile.spark` |
+| **docker-streamlit** | — | Build `Dockerfile.streamlit` |
+| **docker-compose-validate** | — | `docker compose config` |
+| **airflow-dag-validate** | Python 3.10 + Airflow 2.9 | Import DAGs ทุกตัว |
+
+Coverage report upload เป็น artifact ทุก run ดูได้ที่ Actions tab
+
+## Contributing
+
+**Setup local development:**
+```bash
+git clone <repo-url>
+cd HADOOP_NEW
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Linux/Mac
+source .venv/bin/activate
+
+pip install -r requirements.txt
+pip install pytest pytest-cov pytest-mock ruff
+```
+
+**ก่อน commit ทุกครั้ง:**
+```bash
+# lint
+ruff check . --exclude backup_file
+
+# fix อัตโนมัติ (บางส่วน)
+ruff check . --fix --unsafe-fixes --exclude backup_file
+
+# test non-Spark
+pytest tests/ --ignore=tests/test_pipeline_spark.py -v
+
+# test Spark (ต้อง docker compose up ก่อน)
+./run_tests.sh tests/test_pipeline_spark.py
+```
+
+**เพิ่ม column ใหม่:**
+
+1. Upload Excel ที่มี column ใหม่ผ่านหน้า Upload → เลือก **🆕 สร้าง column ใหม่**
+2. Pipeline จะ `ALTER TABLE` เพิ่ม column อัตโนมัติตอนรัน
+3. อัพเดท `CATEGORY_MAPPING` ใน `dashboard/config.py` เพื่อให้ NLP query รู้จัก column ใหม่
 
 ## Troubleshooting
 
