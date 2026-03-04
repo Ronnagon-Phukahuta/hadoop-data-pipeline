@@ -6,7 +6,7 @@
 ## HDFS Structure
 
 ```
-/datalake/versions/finance-itsc/
+/datalake/versions/finance_itsc/
 └── year=2024/
     ├── v_20260301_120000/
     │   ├── part-00000.parquet   ← snapshot ข้อมูล
@@ -57,7 +57,7 @@ restore_version(
     version_id="v_20260215_090000",   # version ที่อยากกลับไป
     year=2024,
     target_table="finance_itsc_wide",
-    target_path="hdfs://namenode:8020/datalake/staging/finance-itsc_wide",
+    target_path="hdfs://namenode:8020/datalake/staging/finance_itsc_wide",
 )
 ```
 
@@ -81,4 +81,4 @@ cleanup_old_versions(sc, year=2024, keep=10)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KEEP_VERSIONS` | 5 | จำนวน version ที่เก็บต่อปี |
-| `VERSIONS_BASE_PATH` | `/datalake/versions/finance-itsc` | HDFS path สำหรับเก็บ versions |
+| `VERSIONS_BASE_PATH` | `/datalake/versions/finance_itsc` | HDFS path สำหรับเก็บ versions |

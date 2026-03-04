@@ -162,11 +162,11 @@ def test_restore_version_uses_atomic_write():
             version_id="v_20260215_090000",
             year=2024,
             target_table="finance_itsc_wide",
-            target_path="hdfs://namenode:8020/datalake/staging/finance-itsc_wide",
+            target_path="hdfs://namenode:8020/datalake/staging/finance_itsc_wide",
         )
 
     mock_atomic.assert_called_once()
-    call_kwargs = mock_atomic.call_args.kwargs
+    call_kwargs = mock_atomic.call_args[1]  # index 1 = kwargs dict
     assert call_kwargs["table_name"] == "finance_itsc_wide"
     assert call_kwargs["partition_value"] == 2024
 
@@ -185,8 +185,8 @@ def test_restore_version_reads_correct_path():
             version_id="v_20260215_090000",
             year=2024,
             target_table="finance_itsc_wide",
-            target_path="hdfs://namenode:8020/datalake/staging/finance-itsc_wide",
+            target_path="hdfs://namenode:8020/datalake/staging/finance_itsc_wide",
         )
 
-    expected_path = "hdfs://namenode:8020/datalake/versions/finance-itsc/year=2024/v_20260215_090000"
+    expected_path = "hdfs://namenode:8020/datalake/versions/finance_itsc/year=2024/v_20260215_090000"
     spark.read.parquet.assert_called_once_with(expected_path)

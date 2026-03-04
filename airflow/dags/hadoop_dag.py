@@ -120,7 +120,7 @@ with DAG(
 
     wait_for_file = BashOperator(
         task_id="wait_for_raw_file",
-        bash_command="docker exec namenode hdfs dfs -test -e /datalake/raw/finance-itsc",
+        bash_command="docker exec namenode hdfs dfs -test -e /datalake/raw/finance_itsc",
     )
 
     run_pipeline = BashOperator(

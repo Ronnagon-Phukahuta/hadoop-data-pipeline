@@ -157,7 +157,7 @@ def get_dq_stats() -> Dict[str, Any]:
 
 
 WEBHDFS_URL = os.environ.get("WEBHDFS_URL", "http://namenode:50070")
-VERSIONS_PATH = "/datalake/versions/finance-itsc"
+VERSIONS_PATH = "/datalake/versions/finance_itsc"
 
 
 def _webhdfs_ls(path: str) -> List[Dict]:

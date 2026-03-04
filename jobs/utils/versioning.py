@@ -3,10 +3,10 @@
 Data Versioning สำหรับ Finance ITSC Pipeline
 
 ทุกครั้งที่ upload CSV ใหม่จะ snapshot ไว้ที่:
-    /datalake/versions/finance-itsc/year=2024/v_20260301_120000/
+    /datalake/versions/finance_itsc/year=2024/v_20260301_120000/
 
 พร้อม metadata:
-    /datalake/versions/finance-itsc/year=2024/v_20260301_120000/_version.json
+    /datalake/versions/finance_itsc/year=2024/v_20260301_120000/_version.json
     {
         "version": "v_20260301_120000",
         "source_file": "finance_2024.csv",
@@ -31,7 +31,7 @@ from utils.retry import atomic_write_table
 
 log = get_logger(__name__)
 
-VERSIONS_BASE_PATH = "hdfs://namenode:8020/datalake/versions/finance-itsc"
+VERSIONS_BASE_PATH = "hdfs://namenode:8020/datalake/versions/finance_itsc"
 KEEP_VERSIONS = 5  # เก็บ 5 version ล่าสุดต่อ year
 
 
@@ -122,7 +122,7 @@ def restore_version(
         restore_version(
             spark, "v_20260215_090000", 2024,
             "finance_itsc_wide",
-            "hdfs://namenode:8020/datalake/staging/finance-itsc_wide"
+            "hdfs://namenode:8020/datalake/staging/finance_itsc_wide"
         )
     """
     version_path = f"{VERSIONS_BASE_PATH}/year={year}/{version_id}"

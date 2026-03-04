@@ -100,7 +100,6 @@ def atomic_write_table(
 
         # เขียนลง _tmp เฉพาะ partition นี้
         df.write.mode("overwrite") \
-            .option("path", tmp_path) \
             .parquet(tmp_path)
 
         log.info("Swapping partition", table=table_name, partition_value=partition_value)

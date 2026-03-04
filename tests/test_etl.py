@@ -32,7 +32,7 @@ def group_by_year(pending_files):
 
 class TestExtractYear:
     def test_standard_path(self):
-        path = "hdfs://namenode:8020/datalake/raw/finance-itsc/year=2024/finance_itsc_2024.csv"
+        path = "hdfs://namenode:8020/datalake/raw/finance_itsc/year=2024/finance_itsc_2024.csv"
         assert extract_year_from_path(path) == 2024
 
     def test_different_year(self):
@@ -40,7 +40,7 @@ class TestExtractYear:
         assert extract_year_from_path(path) == 2021
 
     def test_no_year_in_path(self):
-        path = "/datalake/raw/finance-itsc/file.csv"
+        path = "/datalake/raw/finance_itsc/file.csv"
         assert extract_year_from_path(path) is None
 
     def test_year_in_filename_only(self):

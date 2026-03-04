@@ -33,9 +33,9 @@ hdfs_cmd()  {
 hive_cmd()  { docker exec hive-server hive -e "$1" 2>/dev/null | tail -1; }
 spark_run() { docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_quality.py > /tmp/pipeline_out.log 2>&1; }
 
-RAW_BASE="/datalake/raw/finance-itsc"
-STAGING="/datalake/staging/finance-itsc_wide"
-VERSIONS="/datalake/versions/finance-itsc"
+RAW_BASE="/datalake/raw/finance_itsc"
+STAGING="/datalake/staging/finance_itsc_wide"
+VERSIONS="/datalake/versions/finance_itsc"
 TEST_YEAR=9999
 BAD_YEAR=8888
 

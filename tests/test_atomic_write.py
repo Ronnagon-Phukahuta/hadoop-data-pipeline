@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 
 # ── Helpers: สร้าง mock HDFS filesystem ───────────────────────────
-def make_mock_fs(existing_paths: list[str]):
+def make_mock_fs(existing_paths):
     """สร้าง mock fs ที่มี path ตาม existing_paths"""
     fs = MagicMock()
     fs.exists.side_effect = lambda p: str(p) in existing_paths
