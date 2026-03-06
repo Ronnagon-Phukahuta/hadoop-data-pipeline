@@ -28,8 +28,22 @@ from pyspark.sql import DataFrame
 
 from logger import get_logger
 from utils.retry import atomic_write_table
+from utils.soft_delete import safe_delete  # ← เพิ่ม
 
 log = get_logger(__name__)
+
+
+def compute_schema_hash(columns: list) -> str:
+    """
+    คำนวณ SHA256 hash ของ schema (sorted columns)
+    ใช้เปรียบเทียบว่า schema เปลี่ยนระหว่าง version หรือไม่
+
+    sorted() ก่อน hash เพื่อให้ column order ไม่ส่งผล
+    Returns: hex string 64 ตัว เช่น "a3f2c1d8..."
+    """
+    schema_str = json.dumps(sorted(columns), ensure_ascii=False)
+    return hashlib.sha256(schema_str.encode()).hexdigest()
+
 
 VERSIONS_BASE_PATH = "hdfs://namenode:8020/datalake/versions/finance_itsc"
 KEEP_VERSIONS = 5  # เก็บ 5 version ล่าสุดต่อ year
@@ -60,6 +74,8 @@ def create_version(
     row_count = df.count()
     checksum = _compute_checksum(sc, version_path)
 
+    schema_hash = compute_schema_hash(df.columns)
+
     metadata = {
         "version": version_id,
         "source_file": source_file.split("/")[-1],
@@ -68,17 +84,20 @@ def create_version(
         "row_count": row_count,
         "checksum": checksum,
         "columns": df.columns,
+        "schema_hash": schema_hash,
         "keep_versions": KEEP_VERSIONS,
     }
 
     _write_metadata(sc, version_path, metadata)
 
     log.info(
-        "Version created",
+        "✅ Version created",
         version=version_id,
         year=year,
         rows=row_count,
-        checksum=checksum,
+        columns=len(df.columns),
+        schema_hash=schema_hash[:12],
+        checksum=checksum[:12],
         path=version_path,
     )
 
@@ -143,7 +162,7 @@ def restore_version(
 
 def cleanup_old_versions(sc, year: int, keep: int = KEEP_VERSIONS):
     """
-    เก็บแค่ {keep} version ล่าสุด ลบอันเก่าเกินออก
+    เก็บแค่ {keep} version ล่าสุด ย้ายอันเก่าเกินไป trash (soft delete)
     versions เรียงจากใหม่ → เก่า อยู่แล้ว
     """
     versions = list_versions(sc, year)
@@ -153,16 +172,97 @@ def cleanup_old_versions(sc, year: int, keep: int = KEEP_VERSIONS):
 
     for v in to_delete:
         version_path = f"{VERSIONS_BASE_PATH}/year={year}/{v['version']}"
-        _hdfs_delete(sc, version_path)
-        log.info("Old version deleted", version=v["version"], year=year)
+        trash_path = safe_delete(sc, version_path)  # ← เปลี่ยนจาก _hdfs_delete
+        log.info(
+            "Old version moved to trash",
+            version=v["version"],
+            year=year,
+            trash=trash_path,
+        )
 
     log.info(
         "Cleanup complete",
         year=year,
         kept=len(to_keep),
-        deleted=len(to_delete),
+        trashed=len(to_delete),
         latest=to_keep[0]["version"] if to_keep else None,
     )
+
+
+def diff_versions(sc, version_a: str, version_b: str, year: int) -> Dict:
+    """
+    เปรียบเทียบ 2 versions ว่าต่างกันอะไรบ้าง
+
+    Returns dict:
+        {
+            "version_a": "v_20260301_120000",
+            "version_b": "v_20260306_095749",
+            "schema_changed": True,
+            "added_columns":   ["new_fund_column"],
+            "removed_columns": ["old_column"],
+            "row_count_a": 1500,
+            "row_count_b": 1520,
+            "row_diff": +20,
+            "source_a": "finance_2024_v1.csv",
+            "source_b": "finance_2024_v2.csv",
+            "same_source": False,
+        }
+    """
+    path_a = f"{VERSIONS_BASE_PATH}/year={year}/{version_a}/_version.json"
+    path_b = f"{VERSIONS_BASE_PATH}/year={year}/{version_b}/_version.json"
+
+    raw_a = _read_file(sc, path_a)
+    raw_b = _read_file(sc, path_b)
+
+    if not raw_a:
+        raise FileNotFoundError(f"diff_versions: metadata not found for {version_a}")
+    if not raw_b:
+        raise FileNotFoundError(f"diff_versions: metadata not found for {version_b}")
+
+    meta_a = json.loads(raw_a)
+    meta_b = json.loads(raw_b)
+
+    cols_a = set(meta_a.get("columns", []))
+    cols_b = set(meta_b.get("columns", []))
+    added   = sorted(cols_b - cols_a)
+    removed = sorted(cols_a - cols_b)
+
+    hash_a = meta_a.get("schema_hash") or compute_schema_hash(list(cols_a))
+    hash_b = meta_b.get("schema_hash") or compute_schema_hash(list(cols_b))
+    schema_changed = hash_a != hash_b
+
+    row_a = meta_a.get("row_count", 0)
+    row_b = meta_b.get("row_count", 0)
+
+    result = {
+        "version_a":       version_a,
+        "version_b":       version_b,
+        "year":            year,
+        "schema_changed":  schema_changed,
+        "added_columns":   added,
+        "removed_columns": removed,
+        "row_count_a":     row_a,
+        "row_count_b":     row_b,
+        "row_diff":        row_b - row_a,
+        "source_a":        meta_a.get("source_file"),
+        "source_b":        meta_b.get("source_file"),
+        "same_source":     meta_a.get("source_file") == meta_b.get("source_file"),
+        "timestamp_a":     meta_a.get("timestamp"),
+        "timestamp_b":     meta_b.get("timestamp"),
+    }
+
+    log.info(
+        "Version diff",
+        version_a=version_a,
+        version_b=version_b,
+        year=year,
+        schema_changed=schema_changed,
+        added=len(added),
+        removed=len(removed),
+        row_diff=row_b - row_a,
+    )
+
+    return result
 
 
 def _compute_checksum(sc, path: str) -> str:
@@ -207,13 +307,6 @@ def _read_file(sc, path: str) -> Optional[str]:
     except Exception as e:
         log.warning("Could not read file", path=path, error=str(e))
         return None
-
-
-def _hdfs_delete(sc, path: str):
-    fs = _get_fs(sc)
-    hadoop_path = sc._jvm.org.apache.hadoop.fs.Path(path)
-    if fs.exists(hadoop_path):
-        fs.delete(hadoop_path, True)
 
 
 def _get_fs(sc):

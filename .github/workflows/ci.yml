@@ -29,7 +29,7 @@ jobs:
       - name: Run ruff
         run: ruff check . --output-format=github --exclude backup_file
 
-# ─────────────────────────────────────────
+  # ─────────────────────────────────────────
   # 2a. Test (non-Spark) — Python 3.12
   # ─────────────────────────────────────────
   test:
@@ -102,6 +102,8 @@ jobs:
             bash -c "
               python3 -m pip install pytest pytest-html -q &&
               cd /jobs &&
+              PYSPARK_PYTHON=python3 \
+              PYSPARK_DRIVER_PYTHON=python3 \
               PYTHONPATH=/spark/python:/spark/python/lib/py4j-0.10.7-src.zip \
               python3 -m pytest tests/test_pipeline_spark.py -v \
                 --junitxml=reports/junit.xml

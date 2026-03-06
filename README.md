@@ -18,15 +18,18 @@ flowchart TD
         D[📁 Staging Zone<br/>/datalake/staging]
         E[📁 Curated Zone<br/>/datalake/curated]
         V[📦 Versions<br/>/datalake/versions]
+        T[🗑️ Trash<br/>/datalake/trash]
     end
 
     subgraph ETL["ETL Layer (PySpark)"]
         F[⚡ Spark Job<br/>finance_itsc_pipeline.py]
         G{Data Quality<br/>Checks}
         AW[🔒 Atomic Write<br/>Swap Pattern]
+        SD[🗑️ Soft Delete]
         H[✅ .done marker]
         I[❌ .failed marker]
         J[📧 Email Alert]
+        SL[📋 step_log<br/>Structured Logging]
     end
 
     subgraph Orchestration
@@ -52,11 +55,13 @@ flowchart TD
     A --> B --> C
     K --> F
     C --> F
+    F --> SL
     F --> G
     G -->|Pass| AW
     G -->|Fail| I --> J
     AW --> H
     AW --> V
+    AW --> SD --> T
     H --> L
     L --> M
     L --> N
@@ -97,22 +102,43 @@ HADOOP_NEW/
 │   ├── auth.py             # Authentication
 │   └── config.py           # Table schema, category mapping
 ├── jobs/
-│   ├── finance_itsc_pipeline.py   # Spark ETL entry point
-│   ├── data_quality.py            # Data Quality checks
-│   ├── logger.py                  # Structured logging (loguru)
-│   └── utils/
-│       ├── hdfs.py                # HDFS helpers
-│       ├── alerts.py              # Email alerts
-│       ├── retry.py               # Retry + Atomic write
-│       └── versioning.py          # Data versioning / rollback
-├── tests/                  # Unit tests (pytest)
+│   ├── finance_itsc_pipeline_quality.py  # Spark ETL entry point
+│   ├── data_quality.py                   # Data Quality checks
+│   ├── logger.py                         # Structured logging + step_log
+│   ├── manage.py                         # Dataset CLI (versions/diff/restore/cleanup)
+│   ├── utils/
+│   │   ├── hdfs.py                       # HDFS helpers
+│   │   ├── alerts.py                     # Email alerts
+│   │   ├── retry.py                      # Retry + Atomic write
+│   │   ├── soft_delete.py                # Soft delete → trash
+│   │   ├── schema_evolution.py           # ALTER TABLE สำหรับ column ใหม่
+│   │   └── versioning.py                 # Snapshot, rollback, schema hash, diff
+│   └── scripts/                          # Utility scripts (manual run)
+│       ├── check_hdfs_integrity.py
+│       ├── fix_hdfs_integrity.py
+│       ├── diff_test.py
+│       └── restore.py
+├── tests/
+│   ├── conftest.py         # Shared fixtures และ mock helpers
+│   ├── test_atomic_write.py
+│   ├── test_category_mapping.py
+│   ├── test_etl.py
+│   ├── test_idempotency.py
+│   ├── test_manage.py
+│   ├── test_pipeline_spark.py
+│   ├── test_soft_delete.py
+│   ├── test_sql_safety.py
+│   ├── test_step_log.py
+│   └── test_versioning.py
 ├── docs/
-│   └── versioning.md       # คู่มือ versioning และ rollback
+│   ├── versioning.md       # คู่มือ versioning, rollback, manage.py CLI
+│   ├── manage.md           # manage.py CLI reference
+│   └── auth_setup.md       # ขั้นตอนตั้งค่า Auth
 ├── certs/                  # SSL certificates (ไม่ commit)
 ├── data/                   # Raw data files (ไม่ commit)
 ├── docker-compose.yaml
 ├── nginx.conf
-├── run_tests.sh            # Script รัน Spark tests ใน Docker
+├── run_tests.sh            # Script รัน tests ทั้งหมดใน Docker
 └── .env                    # ไม่ commit — ดู .env.example
 ```
 
@@ -182,6 +208,7 @@ docker exec -i namenode hdfs dfs -put /data/finance_itsc_2024.csv \
 | `OPENAI_API_KEY` | — | GPT column mapping, NLP query, Excel conversion |
 | `GMAIL_APP_PASSWORD` | — | Email alerts เมื่อ pipeline fail |
 | `SECRET_KEY` | — | Streamlit session encryption |
+| `COOKIE_SECRET` | — | Cookie-based auth encryption |
 | `WEBHDFS_URL` | `http://namenode:50070` | Dashboard เชื่อมต่อ HDFS |
 | `ETL_MAX_RETRIES` | `3` | จำนวนครั้ง retry เมื่อ step fail |
 | `ETL_RETRY_DELAY` | `5` | วินาทีรอก่อน retry (x2 ทุกรอบ) |
@@ -277,7 +304,7 @@ Pass/Fail rate แยกตาม check type แสดงเป็น bar chart 
 
 **📦 Version History**
 
-ตารางแสดงทุก snapshot ที่บันทึกไว้ พร้อม rows count และ checksum ต่อ version กด **🔄 Refresh** ที่มุมบนเพื่ออัพเดทข้อมูลล่าสุด
+ตารางแสดงทุก snapshot ที่บันทึกไว้ พร้อม rows count และ schema hash ต่อ version กด **🔄 Refresh** ที่มุมบนเพื่ออัพเดทข้อมูลล่าสุด
 
 ---
 
@@ -310,7 +337,7 @@ flowchart TD
     F2 -->|หมด retry| FAIL3([❌ Skip ปีนี้])
     F2 -->|สำเร็จ| G
 
-    F1 -->|Pass| G[สร้าง .done<br/>📸 Snapshot Version]
+    F1 -->|Pass| G[สร้าง .done<br/>📸 Snapshot + Schema Hash]
     G --> H[Atomic Write<br/>Curated Long Table]
     H --> H1{สำเร็จ?}
     H1 -->|Fail| H2[Retry + Swap<br/>Rollback ถ้า crash]
@@ -319,10 +346,10 @@ flowchart TD
     H1 -->|Pass| DONE([✅ Done])
 ```
 
-ทุก step มี retry อัตโนมัติพร้อม exponential backoff (5 → 10 → 20 วินาที)
+ทุก step มี retry อัตโนมัติพร้อม exponential backoff (5 → 10 → 20 วินาที) และ log ผ่าน `step_log` ทุก step
 
 **Marker files:**
-- `filename.csv.done` — processed สำเร็จ
+- `filename.csv.done` — processed สำเร็จ พร้อม checksum
 - `filename.csv.failed` — Data Quality failed (ต้องแก้ไขก่อน retry)
 
 ## Data Quality Checks
@@ -359,7 +386,7 @@ flowchart TD
     D2 --> FAIL([❌ Error<br/>คืนข้อมูลเดิมให้แล้ว])
     D1 -->|Pass| E
 
-    E[ลบ year=2024_old]
+    E[Soft Delete year=2024_old → /datalake/trash]
     E --> DONE([✅ Done<br/>year=2024 มีข้อมูลใหม่<br/>year=2023, 2025 ไม่โดนแตะ])
 
     style B fill:#dbeafe
@@ -371,63 +398,83 @@ flowchart TD
     style C2 fill:#fee2e2
 ```
 
+## Soft Delete & Trash
+
+แทนที่จะลบข้อมูลทันที ระบบย้ายไปที่ `/datalake/trash/{date}/` ก่อน ทำให้ recover ได้ถ้าพลาด
+
+```bash
+# ดู trash ของปีที่ต้องการ
+spark-submit /jobs/manage.py trash 2024
+
+# restore จาก trash (ถ้าต้องการ)
+# ดูรายละเอียดใน docs/manage.md
+```
+
+Trash จะถูก purge อัตโนมัติเมื่ออายุเกิน 30 วัน
+
 ## Data Versioning
 
-ทุกครั้งที่ ETL สำเร็จจะสร้าง snapshot อัตโนมัติ เก็บไว้ **5 version ล่าสุด** ต่อปี
+ทุกครั้งที่ ETL สำเร็จจะสร้าง snapshot อัตโนมัติ พร้อม **schema hash** สำหรับ detect การเปลี่ยน schema เก็บไว้ **5 version ล่าสุด** ต่อปี
 
-**ดู versions ทั้งหมด:**
-```python
-from utils.versioning import list_versions
-versions = list_versions(sc, year=2024)
-for v in versions:
-    print(f"{v['version']} | {v['timestamp']} | rows={v['row_count']}")
+**ผ่าน manage.py CLI (แนะนำ):**
+```bash
+# ดู versions ทั้งหมดของปี 2024
+spark-submit /jobs/manage.py versions 2024
+
+# เปรียบเทียบ 2 versions
+spark-submit /jobs/manage.py diff 2024 v_20260301_120000 v_20260215_090000
+
+# restore version เก่า
+spark-submit /jobs/manage.py restore 2024 v_20260215_090000 --yes
+
+# ลบ versions เก่า เก็บไว้ 5 ล่าสุด
+spark-submit /jobs/manage.py cleanup 2024 --keep 5 --yes
 ```
 
-**Rollback ไป version เก่า:**
-```python
-from utils.versioning import restore_version
-restore_version(
-    spark,
-    version_id="v_20260215_090000",
-    year=2024,
-    target_table="finance_itsc_wide",
-    target_path="hdfs://namenode:8020/datalake/staging/finance_itsc_wide",
-)
+ดูรายละเอียดเพิ่มเติมได้ที่ [docs/versioning.md](docs/versioning.md) และ [docs/manage.md](docs/manage.md)
+
+## Structured Logging
+
+ทุก step ใน pipeline log ผ่าน `step_log` context manager อัตโนมัติ:
+
+```
+2026-03-06 12:00:01 | INFO | [dataset=finance_itsc] [step=transform] START
+2026-03-06 12:00:03 | INFO | [dataset=finance_itsc] [step=transform] SUCCESS (2341ms) rows=1500
+2026-03-06 12:00:03 | ERROR | [dataset=finance_itsc] [step=atomic_write] FAILED (810ms) — disk full
 ```
 
-ดูรายละเอียดเพิ่มเติมได้ที่ [docs/versioning.md](docs/versioning.md)
+ดู logs:
+```bash
+docker exec spark-master cat /jobs/logs/etl.log
+docker exec spark-master cat /jobs/logs/etl.error.log
+```
 
 ## Running Tests
 
-Tests แบ่งเป็น 2 กลุ่ม — non-Spark รันบน Python ปกติ, Spark tests รันใน Docker
-
-**Non-Spark tests (เร็ว ~5 วินาที):**
-```bash
-pytest tests/ --ignore=tests/test_pipeline_spark.py -v
-```
-
-**Spark tests (รันใน Docker container):**
+**รัน tests ทั้งหมดใน Docker (แนะนำ):**
 ```bash
 ./run_tests.sh
 # หรือเฉพาะไฟล์
-./run_tests.sh tests/test_pipeline_spark.py
-# หรือเฉพาะ test เดียว
-./run_tests.sh tests/test_pipeline_spark.py::TestWideToLong::test_basic_row_count
+./run_tests.sh tests/test_versioning.py
+# หรือเฉพาะ test เดียว พร้อม flags
+./run_tests.sh tests/test_manage.py -v
 ```
 
-`run_tests.sh` จะ copy reports กลับมาที่ `./reports/` อัตโนมัติ
-
-> **หมายเหตุ:** Spark tests ต้องรันใน `spark-master` container เท่านั้น เพราะ base image (`bde2020/spark-master:2.4.5-hadoop2.7`) ใช้ Python 3.7 ซึ่ง compatible กับ PySpark บน Linux
+`run_tests.sh` รัน 132 tests ทั้งหมดใน Docker container (Python 3.7 + PySpark) และ copy reports กลับมาที่ `./reports/` อัตโนมัติ
 
 **Test coverage ทั้งหมด:**
 
 | Test file | ทดสอบอะไร |
 |-----------|-----------|
 | `test_atomic_write.py` | Swap pattern, retry, rollback, ปีอื่นไม่โดนแตะ |
-| `test_versioning.py` | Create snapshot, list versions, cleanup, restore |
-| `test_etl.py` | CSV parsing, year injection, Thai Buddhist calendar |
+| `test_versioning.py` | Snapshot, list, cleanup, restore, schema hash, diff |
+| `test_soft_delete.py` | Soft delete, trash, purge, restore from trash |
+| `test_manage.py` | CLI commands: versions, diff, restore, cleanup |
+| `test_step_log.py` | Structured logging, duration, ctx fields, error log |
+| `test_idempotency.py` | Checksum, .done marker, skip processed files |
+| `test_etl.py` | CSV parsing, year injection, date filter |
 | `test_category_mapping.py` | Column mapping, schema diff, critical columns |
-| `test_sql_safety.py` | SQL injection, reserved keyword handling |
+| `test_sql_safety.py` | Reserved keyword handling, remaining sum guard |
 | `test_pipeline_spark.py` | Wide→Long transform, String→Double cast, PART 2 recovery |
 
 ## CI/CD Pipeline
@@ -477,11 +524,8 @@ ruff check . --exclude backup_file
 # fix อัตโนมัติ (บางส่วน)
 ruff check . --fix --unsafe-fixes --exclude backup_file
 
-# test non-Spark
-pytest tests/ --ignore=tests/test_pipeline_spark.py -v
-
-# test Spark (ต้อง docker compose up ก่อน)
-./run_tests.sh tests/test_pipeline_spark.py
+# test ทั้งหมด (ต้อง docker compose up ก่อน)
+./run_tests.sh
 ```
 
 **เพิ่ม column ใหม่:**
@@ -521,4 +565,11 @@ docker exec spark-master cat /jobs/logs/etl.log
 
 # เฉพาะ error
 docker exec spark-master cat /jobs/logs/etl.error.log
+```
+
+**Trash เต็ม — purge manually**
+```bash
+spark-submit /jobs/manage.py trash 2024
+# ดูแล้วค่อย cleanup versions
+spark-submit /jobs/manage.py cleanup 2024 --keep 5 --yes
 ```

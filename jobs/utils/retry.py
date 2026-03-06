@@ -79,13 +79,13 @@ def atomic_write_table(
         1. เขียนลง {partition_path}_tmp
         2. rename partition เดิม → _old  (backup)
         3. rename _tmp → partition        (สลับทันที)
-        4. ลบ _old                        (ค่อยลบทีหลัง)
+        4. safe_delete _old → trash       (ย้ายไป trash แทนลบตรง)
 
     ถ้า crash ทุก step มี recovery:
         - crash step 1 → partition เดิมยังอยู่, ลบ _tmp ทิ้ง
         - crash step 2 → partition เดิมยังอยู่
         - crash step 3 → มี _old เป็น backup, rollback ได้
-        - crash step 4 → partition ใหม่ใช้งานได้แล้ว แค่ _old ค้างอยู่
+        - crash step 4 → partition ใหม่ใช้งานได้แล้ว แค่ _old ค้างอยู่ใน trash
     """
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
@@ -131,8 +131,10 @@ def _hdfs_swap(sc, src: str, dst: str):
     Swap pattern — ป้องกันข้อมูลสูญหาย
         1. rename dst → dst_old  (backup)
         2. rename src → dst      (สลับทันที)
-        3. ลบ dst_old            (ค่อยลบทีหลัง)
+        3. safe_delete dst_old → trash (ย้ายไป trash แทนลบตรง)
     """
+    from utils.soft_delete import safe_delete  # ← import ที่นี่เพื่อหลีกเลี่ยง circular import
+
     fs = _get_fs(sc)
     src_path = sc._jvm.org.apache.hadoop.fs.Path(src)
     dst_path = sc._jvm.org.apache.hadoop.fs.Path(dst)
@@ -141,7 +143,9 @@ def _hdfs_swap(sc, src: str, dst: str):
     # Step 1: backup partition เดิม (ถ้ามี)
     if fs.exists(dst_path):
         if fs.exists(old_path):
-            fs.delete(old_path, True)  # ลบ _old เก่าที่ค้างอยู่
+            # _old ค้างอยู่จาก crash ก่อนหน้า → move ไป trash ก่อน
+            safe_delete(sc, f"{dst}_old")
+            log.warning("Stale _old partition moved to trash before backup", path=f"{dst}_old")
         success = fs.rename(dst_path, old_path)
         if not success:
             raise RuntimeError(f"HDFS backup failed: {dst} -> {dst}_old")
@@ -158,10 +162,10 @@ def _hdfs_swap(sc, src: str, dst: str):
 
     log.info("Partition swapped", new=dst)
 
-    # Step 3: ลบ backup
+    # Step 3: ย้าย backup ไป trash (แทนลบตรง)
     if fs.exists(old_path):
-        fs.delete(old_path, True)
-        log.info("Backup deleted", path=f"{dst}_old")
+        trash_path = safe_delete(sc, f"{dst}_old")
+        log.info("Backup moved to trash", path=f"{dst}_old", trash=trash_path)
 
 
 def _hdfs_delete(sc, path: str):
