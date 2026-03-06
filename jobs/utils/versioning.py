@@ -28,6 +28,7 @@ from pyspark.sql import DataFrame
 
 from logger import get_logger
 from utils.retry import atomic_write_table
+from utils.soft_delete import safe_delete  # ← เพิ่ม
 
 log = get_logger(__name__)
 
@@ -143,7 +144,7 @@ def restore_version(
 
 def cleanup_old_versions(sc, year: int, keep: int = KEEP_VERSIONS):
     """
-    เก็บแค่ {keep} version ล่าสุด ลบอันเก่าเกินออก
+    เก็บแค่ {keep} version ล่าสุด ย้ายอันเก่าเกินไป trash (soft delete)
     versions เรียงจากใหม่ → เก่า อยู่แล้ว
     """
     versions = list_versions(sc, year)
@@ -153,14 +154,19 @@ def cleanup_old_versions(sc, year: int, keep: int = KEEP_VERSIONS):
 
     for v in to_delete:
         version_path = f"{VERSIONS_BASE_PATH}/year={year}/{v['version']}"
-        _hdfs_delete(sc, version_path)
-        log.info("Old version deleted", version=v["version"], year=year)
+        trash_path = safe_delete(sc, version_path)  # ← เปลี่ยนจาก _hdfs_delete
+        log.info(
+            "Old version moved to trash",
+            version=v["version"],
+            year=year,
+            trash=trash_path,
+        )
 
     log.info(
         "Cleanup complete",
         year=year,
         kept=len(to_keep),
-        deleted=len(to_delete),
+        trashed=len(to_delete),
         latest=to_keep[0]["version"] if to_keep else None,
     )
 
@@ -207,13 +213,6 @@ def _read_file(sc, path: str) -> Optional[str]:
     except Exception as e:
         log.warning("Could not read file", path=path, error=str(e))
         return None
-
-
-def _hdfs_delete(sc, path: str):
-    fs = _get_fs(sc)
-    hadoop_path = sc._jvm.org.apache.hadoop.fs.Path(path)
-    if fs.exists(hadoop_path):
-        fs.delete(hadoop_path, True)
 
 
 def _get_fs(sc):

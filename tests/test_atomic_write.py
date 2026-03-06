@@ -13,16 +13,34 @@ from unittest.mock import MagicMock, patch
 
 # ── Helpers: สร้าง mock HDFS filesystem ───────────────────────────
 def make_mock_fs(existing_paths):
-    """สร้าง mock fs ที่มี path ตาม existing_paths"""
+    """สร้าง mock fs ที่มี path ตาม existing_paths และ rename update state จริง"""
+    existing = set(existing_paths)
     fs = MagicMock()
-    fs.exists.side_effect = lambda p: str(p) in existing_paths
-    fs.rename.return_value = True
+
+    def exists(p):
+        return str(p) in existing
+
+    def rename(src, dst):
+        s, d = str(src), str(dst)
+        if s in existing:
+            existing.discard(s)
+            existing.add(d)
+        return True
+
+    fs.exists.side_effect = exists
+    fs.rename.side_effect = rename
     fs.delete.return_value = True
+    fs.mkdirs.return_value = True
     return fs
 
 
 def make_mock_sc(fs):
-    """สร้าง mock SparkContext"""
+    """
+    สร้าง mock SparkContext
+    ใช้ return_value (ไม่ใช่ side_effect) เพื่อให้ FileSystem.get(...)
+    คืน fs เดิมเสมอ ไม่ว่า argument จะต่างกัน
+    (retry._get_fs และ soft_delete._get_fs เรียก FileSystem.get ด้วย uri ต่างกัน)
+    """
     sc = MagicMock()
     sc._jvm.java.net.URI.create.return_value = MagicMock()
     sc._jsc.hadoopConfiguration.return_value = MagicMock()
@@ -33,8 +51,8 @@ def make_mock_sc(fs):
 
 # ── Test 1: สำเร็จปกติ ────────────────────────────────────────────
 def test_swap_success():
-    """swap สำเร็จ — rename ถูก step, ลบ _old ทิ้ง"""
-    existing = ["/data/year=2024", "/data/year=2024_old"]  # มี partition เดิม + _old จาก backup
+    """swap สำเร็จ — backup, swap, แล้ว safe_delete _old ไป trash"""
+    existing = ["/data/year=2024"]  # ไม่มี _old ค้างอยู่
     fs = make_mock_fs(existing)
     sc = make_mock_sc(fs)
 
@@ -45,8 +63,12 @@ def test_swap_success():
     fs.rename.assert_any_call("/data/year=2024", "/data/year=2024_old")
     # แล้วค่อย swap
     fs.rename.assert_any_call("/data/year=2024_tmp", "/data/year=2024")
-    # ลบ _old ทิ้ง
-    fs.delete.assert_called_with("/data/year=2024_old", True)
+    # step 3: safe_delete เรียก fs.rename(_old → trash) ไม่ใช่ fs.delete
+    # ทั้งหมด 3 rename calls: backup, swap, safe_delete(_old→trash)
+    rename_dsts = [str(c.args[1]) for c in fs.rename.call_args_list]
+    assert any("trash" in d for d in rename_dsts), (
+        "expected _old to be renamed into trash path, got: " + str(rename_dsts)
+    )
 
 
 # ── Test 2: ไม่มี partition เดิม (first time write) ───────────────
@@ -68,21 +90,32 @@ def test_swap_first_time():
 # ── Test 3: crash step 3 (rename _tmp → partition fail) ───────────
 def test_swap_rename_fail_rollback():
     """rename _tmp → partition fail — rollback จาก _old ได้"""
+    # ไม่มี _old ตอนเริ่มต้น → safe_delete stale branch ไม่ถูกเรียก
+    # call sequence: 1=backup(dst→old) 2=swap(_tmp→dst)←fail → rollback(old→dst)
     existing = ["/data/year=2024"]
     fs = make_mock_fs(existing)
     sc = make_mock_sc(fs)
 
-    # rename ครั้งที่ 2 (swap) fail
     call_count = {"n": 0}
     def rename_side_effect(src, dst):
         call_count["n"] += 1
-        if call_count["n"] == 2:  # swap call
-            return False  # fail!
+        if call_count["n"] == 2:  # swap call → fail
+            return False
         return True
 
     fs.rename.side_effect = rename_side_effect
-    # หลัง fail จะมี _old อยู่
-    fs.exists.side_effect = lambda p: p in ["/data/year=2024", "/data/year=2024_old"]
+    # _old มีอยู่หลังจาก backup สำเร็จ (call 1) เพื่อให้ rollback branch ทำงาน
+    call_exists = {"n": 0}
+    def exists_side_effect(p):
+        call_exists["n"] += 1
+        # ครั้งแรก: check dst ("/data/year=2024") → True
+        # ครั้งที่ 2: check old ("/data/year=2024_old") → False (ไม่มี stale)
+        # ครั้งที่ 3: check old หลัง swap fail → True (rollback ได้)
+        if str(p) == "/data/year=2024_old":
+            return call_exists["n"] >= 3
+        return str(p) in existing
+
+    fs.exists.side_effect = exists_side_effect
 
     from utils.retry import _hdfs_swap
     with pytest.raises(RuntimeError, match="HDFS rename failed"):
@@ -99,8 +132,8 @@ def test_swap_backup_fail():
     fs = make_mock_fs(existing)
     sc = make_mock_sc(fs)
 
-    # backup rename fail
-    fs.rename.return_value = False
+    # override side_effect ให้ rename fail เสมอ
+    fs.rename.side_effect = lambda src, dst: False
 
     from utils.retry import _hdfs_swap
     with pytest.raises(RuntimeError, match="HDFS backup failed"):
@@ -143,7 +176,6 @@ def test_with_retry_exponential_backoff():
 
     assert result == "ok"
     assert call_count["n"] == 3
-    # backoff: 5 → 10
     mock_sleep.assert_any_call(5)
     mock_sleep.assert_any_call(10)
 
