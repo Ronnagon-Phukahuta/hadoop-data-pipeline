@@ -8,11 +8,13 @@
 """
 
 import json
+import pytest
 from unittest.mock import MagicMock, patch
 
 
 # ── Helpers ───────────────────────────────────────────────────────
 from conftest import make_mock_sc as _make_mock_sc
+from utils.versioning import compute_schema_hash
 
 
 def make_mock_sc():
@@ -186,3 +188,191 @@ def test_restore_version_reads_correct_path():
 
     expected_path = "hdfs://namenode:8020/datalake/versions/finance_itsc/year=2024/v_20260215_090000"
     spark.read.parquet.assert_called_once_with(expected_path)
+
+# ── Test 7: compute_schema_hash ───────────────────────────────────
+def test_schema_hash_is_deterministic():
+    """columns เดิม → hash เดิมเสมอ ไม่ว่าจะเรียกกี่ครั้ง"""
+    from utils.versioning import compute_schema_hash
+
+    cols = ["date", "details", "year", "compensation_budget", "expense_budget"]
+    assert compute_schema_hash(cols) == compute_schema_hash(cols)
+
+
+def test_schema_hash_order_independent():
+    """column order ต่างกัน → hash เดิม เพราะ sorted() ก่อน hash"""
+    from utils.versioning import compute_schema_hash
+
+    cols_a = ["date", "details", "compensation_budget", "expense_budget"]
+    cols_b = ["expense_budget", "compensation_budget", "date", "details"]
+    assert compute_schema_hash(cols_a) == compute_schema_hash(cols_b)
+
+
+def test_schema_hash_changes_when_column_added():
+    """เพิ่ม column → hash เปลี่ยน"""
+    from utils.versioning import compute_schema_hash
+
+    cols_v1 = ["date", "details", "compensation_budget"]
+    cols_v2 = ["date", "details", "compensation_budget", "new_fund_column"]
+    assert compute_schema_hash(cols_v1) != compute_schema_hash(cols_v2)
+
+
+def test_schema_hash_changes_when_column_removed():
+    """ลบ column → hash เปลี่ยน"""
+    from utils.versioning import compute_schema_hash
+
+    cols_v1 = ["date", "details", "compensation_budget", "expense_budget"]
+    cols_v2 = ["date", "details", "compensation_budget"]
+    assert compute_schema_hash(cols_v1) != compute_schema_hash(cols_v2)
+
+
+def test_schema_hash_stored_in_version_metadata():
+    """create_version ต้องเขียน schema_hash ลงใน _version.json"""
+    sc, fs = make_mock_sc()
+    df = make_mock_df(columns=["date", "details", "year", "compensation_budget"])
+
+    written_metadata = {}
+
+    def mock_create(path):
+        stream = MagicMock()
+        def capture_write(data):
+            written_metadata.update(json.loads(data.decode("utf-8")))
+        stream.write.side_effect = capture_write
+        return stream
+
+    fs.create.side_effect = mock_create
+
+    with patch("utils.versioning.datetime") as mock_dt:
+        mock_dt.now.return_value.strftime.return_value = "v_20260306_120000"
+        mock_dt.now.return_value.isoformat.return_value = "2026-03-06T12:00:00"
+
+        from utils.versioning import create_version, compute_schema_hash
+        create_version(sc, df, "/raw/finance_2024.csv", year=2024)
+
+    assert "schema_hash" in written_metadata
+    expected_hash = compute_schema_hash(["date", "details", "year", "compensation_budget"])
+    assert written_metadata["schema_hash"] == expected_hash
+
+
+def test_schema_hash_is_12_char_hex():
+    """schema_hash ต้องเป็น hex string ที่ถูกต้อง"""
+    from utils.versioning import compute_schema_hash
+    import re
+
+    h = compute_schema_hash(["date", "details", "compensation_budget"])
+    # SHA256 hex = 64 chars
+    assert len(h) == 64
+    assert re.match(r"^[0-9a-f]+$", h)
+
+
+# ── Tests: diff_versions ──────────────────────────────────────────
+
+def test_diff_versions_no_schema_change():
+    """columns เหมือนกันทุกตัว → schema_changed=False"""
+    sc, fs = make_mock_sc()
+    cols = ["date", "details", "year", "compensation_budget"]
+
+    meta_a = {**make_version_metadata("v_20260301_000000", "2026-03-01T00:00:00"),
+              "columns": cols, "schema_hash": compute_schema_hash(cols), "row_count": 100}
+    meta_b = {**make_version_metadata("v_20260306_000000", "2026-03-06T00:00:00"),
+              "columns": cols, "schema_hash": compute_schema_hash(cols), "row_count": 120}
+
+    with patch("utils.versioning._read_file") as mock_read:
+        mock_read.side_effect = [json.dumps(meta_a), json.dumps(meta_b)]
+        from utils.versioning import diff_versions
+        result = diff_versions(sc, "v_20260301_000000", "v_20260306_000000", year=2024)
+
+    assert result["schema_changed"] is False
+    assert result["added_columns"] == []
+    assert result["removed_columns"] == []
+
+
+def test_diff_versions_column_added():
+    """เพิ่ม column → schema_changed=True, added_columns มี column ใหม่"""
+    sc, fs = make_mock_sc()
+    cols_a = ["date", "details", "compensation_budget"]
+    cols_b = ["date", "details", "compensation_budget", "new_fund"]
+
+    meta_a = {**make_version_metadata("v_20260301_000000", "2026-03-01T00:00:00"),
+              "columns": cols_a, "schema_hash": compute_schema_hash(cols_a), "row_count": 100}
+    meta_b = {**make_version_metadata("v_20260306_000000", "2026-03-06T00:00:00"),
+              "columns": cols_b, "schema_hash": compute_schema_hash(cols_b), "row_count": 100}
+
+    with patch("utils.versioning._read_file") as mock_read:
+        mock_read.side_effect = [json.dumps(meta_a), json.dumps(meta_b)]
+        from utils.versioning import diff_versions
+        result = diff_versions(sc, "v_20260301_000000", "v_20260306_000000", year=2024)
+
+    assert result["schema_changed"] is True
+    assert result["added_columns"] == ["new_fund"]
+    assert result["removed_columns"] == []
+
+
+def test_diff_versions_column_removed():
+    """ลบ column → schema_changed=True, removed_columns มี column ที่หาย"""
+    sc, fs = make_mock_sc()
+    cols_a = ["date", "details", "compensation_budget", "old_column"]
+    cols_b = ["date", "details", "compensation_budget"]
+
+    meta_a = {**make_version_metadata("v_20260301_000000", "2026-03-01T00:00:00"),
+              "columns": cols_a, "schema_hash": compute_schema_hash(cols_a), "row_count": 100}
+    meta_b = {**make_version_metadata("v_20260306_000000", "2026-03-06T00:00:00"),
+              "columns": cols_b, "schema_hash": compute_schema_hash(cols_b), "row_count": 100}
+
+    with patch("utils.versioning._read_file") as mock_read:
+        mock_read.side_effect = [json.dumps(meta_a), json.dumps(meta_b)]
+        from utils.versioning import diff_versions
+        result = diff_versions(sc, "v_20260301_000000", "v_20260306_000000", year=2024)
+
+    assert result["schema_changed"] is True
+    assert result["added_columns"] == []
+    assert result["removed_columns"] == ["old_column"]
+
+
+def test_diff_versions_row_diff():
+    """row_diff คำนวณถูกต้อง"""
+    sc, fs = make_mock_sc()
+    cols = ["date", "details", "compensation_budget"]
+
+    meta_a = {**make_version_metadata("v_20260301_000000", "2026-03-01T00:00:00"),
+              "columns": cols, "schema_hash": compute_schema_hash(cols), "row_count": 100}
+    meta_b = {**make_version_metadata("v_20260306_000000", "2026-03-06T00:00:00"),
+              "columns": cols, "schema_hash": compute_schema_hash(cols), "row_count": 125}
+
+    with patch("utils.versioning._read_file") as mock_read:
+        mock_read.side_effect = [json.dumps(meta_a), json.dumps(meta_b)]
+        from utils.versioning import diff_versions
+        result = diff_versions(sc, "v_20260301_000000", "v_20260306_000000", year=2024)
+
+    assert result["row_diff"] == 25
+    assert result["row_count_a"] == 100
+    assert result["row_count_b"] == 125
+
+
+def test_diff_versions_missing_metadata_raises():
+    """version ที่ไม่มี metadata → raise FileNotFoundError"""
+    sc, fs = make_mock_sc()
+
+    with patch("utils.versioning._read_file", return_value=None):
+        from utils.versioning import diff_versions
+        with pytest.raises(FileNotFoundError):
+            diff_versions(sc, "v_nonexistent", "v_20260306_000000", year=2024)
+
+
+def test_diff_versions_legacy_no_schema_hash():
+    """version เก่าไม่มี schema_hash → คำนวณจาก columns แทน"""
+    sc, fs = make_mock_sc()
+    cols = ["date", "details", "compensation_budget"]
+
+    # ไม่มี schema_hash ใน metadata (version เก่า)
+    meta_a = {**make_version_metadata("v_20260201_000000", "2026-02-01T00:00:00"),
+              "columns": cols, "row_count": 100}
+    meta_b = {**make_version_metadata("v_20260306_000000", "2026-03-06T00:00:00"),
+              "columns": cols, "schema_hash": compute_schema_hash(cols), "row_count": 100}
+
+    with patch("utils.versioning._read_file") as mock_read:
+        mock_read.side_effect = [json.dumps(meta_a), json.dumps(meta_b)]
+        from utils.versioning import diff_versions
+        result = diff_versions(sc, "v_20260201_000000", "v_20260306_000000", year=2024)
+
+    # columns เหมือนกัน → schema_changed=False แม้ version เก่าไม่มี schema_hash
+    assert result["schema_changed"] is False

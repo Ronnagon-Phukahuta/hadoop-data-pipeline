@@ -4,7 +4,7 @@ Tests สำหรับ soft_delete.py — ใช้ mock HDFS (ไม่ต้
 """
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from datetime import datetime
 
 

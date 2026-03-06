@@ -3,6 +3,7 @@ import sys
 import os
 import pytest
 from unittest.mock import MagicMock
+from datetime import datetime
 
 # ─── Spark on Windows: ต้องการ winutils.exe ───
 if sys.platform == "win32":
@@ -27,25 +28,28 @@ def make_hdfs_fs(existing_paths=None):
     existing = set(existing_paths or [])
     fs = MagicMock()
 
+    def _p(p):
+        return p.toString() if hasattr(p, "toString") else str(p)
+
     def exists(p):
-        s = str(p)
+        s = _p(p)
         return s in existing or any(e.startswith(s + "/") for e in existing)
 
     def rename(src, dst):
-        s, d = str(src), str(dst)
+        s, d = _p(src), _p(dst)
         if s in existing:
             existing.discard(s)
             existing.add(d)
         return True
 
     def delete(path_mock, recursive=True):
-        existing.discard(str(path_mock))
+        existing.discard(_p(path_mock))
 
     def mkdirs(p):
         pass
 
     def listStatus(path_mock):
-        prefix = str(path_mock).rstrip("/")
+        prefix = _p(path_mock).rstrip("/")
         seen, out = set(), []
         for p in list(existing):
             if not p.startswith(prefix + "/"):

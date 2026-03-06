@@ -32,6 +32,19 @@ from utils.soft_delete import safe_delete  # ← เพิ่ม
 
 log = get_logger(__name__)
 
+
+def compute_schema_hash(columns: list) -> str:
+    """
+    คำนวณ SHA256 hash ของ schema (sorted columns)
+    ใช้เปรียบเทียบว่า schema เปลี่ยนระหว่าง version หรือไม่
+
+    sorted() ก่อน hash เพื่อให้ column order ไม่ส่งผล
+    Returns: hex string 64 ตัว เช่น "a3f2c1d8..."
+    """
+    schema_str = json.dumps(sorted(columns), ensure_ascii=False)
+    return hashlib.sha256(schema_str.encode()).hexdigest()
+
+
 VERSIONS_BASE_PATH = "hdfs://namenode:8020/datalake/versions/finance_itsc"
 KEEP_VERSIONS = 5  # เก็บ 5 version ล่าสุดต่อ year
 
@@ -52,8 +65,7 @@ def create_version(
     version_id = timestamp.strftime("v_%Y%m%d_%H%M%S")
     version_path = f"{VERSIONS_BASE_PATH}/year={year}/{version_id}"
 
-    log.info("Creating version snapshot", version=version_id, year=year,
-             source=source_file.split("/")[-1], path=version_path)
+    log.info("Creating version snapshot", version=version_id, year=year, source=source_file)
 
     # เขียน snapshot
     df.write.mode("overwrite").parquet(version_path)
@@ -61,6 +73,8 @@ def create_version(
     # คำนวณ metadata
     row_count = df.count()
     checksum = _compute_checksum(sc, version_path)
+
+    schema_hash = compute_schema_hash(df.columns)
 
     metadata = {
         "version": version_id,
@@ -70,6 +84,7 @@ def create_version(
         "row_count": row_count,
         "checksum": checksum,
         "columns": df.columns,
+        "schema_hash": schema_hash,
         "keep_versions": KEEP_VERSIONS,
     }
 
@@ -81,6 +96,7 @@ def create_version(
         year=year,
         rows=row_count,
         columns=len(df.columns),
+        schema_hash=schema_hash[:12],
         checksum=checksum[:12],
         path=version_path,
     )
@@ -170,8 +186,83 @@ def cleanup_old_versions(sc, year: int, keep: int = KEEP_VERSIONS):
         kept=len(to_keep),
         trashed=len(to_delete),
         latest=to_keep[0]["version"] if to_keep else None,
-        versions_kept=[v["version"] for v in to_keep],
     )
+
+
+def diff_versions(sc, version_a: str, version_b: str, year: int) -> Dict:
+    """
+    เปรียบเทียบ 2 versions ว่าต่างกันอะไรบ้าง
+
+    Returns dict:
+        {
+            "version_a": "v_20260301_120000",
+            "version_b": "v_20260306_095749",
+            "schema_changed": True,
+            "added_columns":   ["new_fund_column"],
+            "removed_columns": ["old_column"],
+            "row_count_a": 1500,
+            "row_count_b": 1520,
+            "row_diff": +20,
+            "source_a": "finance_2024_v1.csv",
+            "source_b": "finance_2024_v2.csv",
+            "same_source": False,
+        }
+    """
+    path_a = f"{VERSIONS_BASE_PATH}/year={year}/{version_a}/_version.json"
+    path_b = f"{VERSIONS_BASE_PATH}/year={year}/{version_b}/_version.json"
+
+    raw_a = _read_file(sc, path_a)
+    raw_b = _read_file(sc, path_b)
+
+    if not raw_a:
+        raise FileNotFoundError(f"diff_versions: metadata not found for {version_a}")
+    if not raw_b:
+        raise FileNotFoundError(f"diff_versions: metadata not found for {version_b}")
+
+    meta_a = json.loads(raw_a)
+    meta_b = json.loads(raw_b)
+
+    cols_a = set(meta_a.get("columns", []))
+    cols_b = set(meta_b.get("columns", []))
+    added   = sorted(cols_b - cols_a)
+    removed = sorted(cols_a - cols_b)
+
+    hash_a = meta_a.get("schema_hash") or compute_schema_hash(list(cols_a))
+    hash_b = meta_b.get("schema_hash") or compute_schema_hash(list(cols_b))
+    schema_changed = hash_a != hash_b
+
+    row_a = meta_a.get("row_count", 0)
+    row_b = meta_b.get("row_count", 0)
+
+    result = {
+        "version_a":       version_a,
+        "version_b":       version_b,
+        "year":            year,
+        "schema_changed":  schema_changed,
+        "added_columns":   added,
+        "removed_columns": removed,
+        "row_count_a":     row_a,
+        "row_count_b":     row_b,
+        "row_diff":        row_b - row_a,
+        "source_a":        meta_a.get("source_file"),
+        "source_b":        meta_b.get("source_file"),
+        "same_source":     meta_a.get("source_file") == meta_b.get("source_file"),
+        "timestamp_a":     meta_a.get("timestamp"),
+        "timestamp_b":     meta_b.get("timestamp"),
+    }
+
+    log.info(
+        "Version diff",
+        version_a=version_a,
+        version_b=version_b,
+        year=year,
+        schema_changed=schema_changed,
+        added=len(added),
+        removed=len(removed),
+        row_diff=row_b - row_a,
+    )
+
+    return result
 
 
 def _compute_checksum(sc, path: str) -> str:
