@@ -121,7 +121,7 @@ def test_cleanup_keeps_only_n_versions():
     versions_sorted = list(reversed(versions))
 
     with patch("utils.versioning.list_versions", return_value=versions_sorted), \
-         patch("utils.versioning._hdfs_delete") as mock_delete:
+         patch("utils.versioning.safe_delete") as mock_delete:
 
         from utils.versioning import cleanup_old_versions
         cleanup_old_versions(sc, year=2024, keep=5)
@@ -140,7 +140,7 @@ def test_cleanup_no_delete_when_under_limit():
     ]
 
     with patch("utils.versioning.list_versions", return_value=versions), \
-         patch("utils.versioning._hdfs_delete") as mock_delete:
+         patch("utils.versioning.safe_delete") as mock_delete:
 
         from utils.versioning import cleanup_old_versions
         cleanup_old_versions(sc, year=2024, keep=5)
