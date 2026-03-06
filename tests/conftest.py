@@ -3,6 +3,7 @@ import sys
 import os
 import pytest
 from unittest.mock import MagicMock
+from datetime import datetime
 
 # ─── Spark on Windows: ต้องการ winutils.exe ───
 if sys.platform == "win32":
@@ -42,7 +43,13 @@ def make_hdfs_fs(existing_paths=None):
         return True
 
     def delete(path_mock, recursive=True):
-        existing.discard(_p(path_mock))
+        s = _p(path_mock)
+        existing.discard(s)
+        # recursive delete — ลบ children ด้วย
+        if recursive:
+            children = [p for p in list(existing) if p.startswith(s + "/")]
+            for c in children:
+                existing.discard(c)
 
     def mkdirs(p):
         pass

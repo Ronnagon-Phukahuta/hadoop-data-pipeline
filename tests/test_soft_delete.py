@@ -15,16 +15,11 @@ from conftest import make_mock_sc as _make_mock_sc, make_hdfs_fs
 def make_sc(existing_paths=None):
     """wrapper ที่คืน (sc, fs, existing, renamed) เหมือนเดิม"""
     fs, existing = make_hdfs_fs(existing_paths)
-    renamed = {}
-    _orig_rename = fs.rename.side_effect
 
-    def rename_track(src, dst):
-        result = _orig_rename(src, dst)
-        if result:
-            renamed[str(src)] = str(dst)
-        return result
+    # track rename โดยดูจาก existing set ที่ rename side_effect update แล้ว
+    # renamed เป็น snapshot ของ existing หลัง rename (ใช้ existing โดยตรงแทน)
+    renamed = existing  # alias — renamed และ existing เป็น set เดียวกัน
 
-    fs.rename.side_effect = rename_track
     sc, _, _ = _make_mock_sc(fs=fs)
     return sc, fs, existing, renamed
 
@@ -45,7 +40,7 @@ class TestSafeDelete:
 
         assert path not in existing
         assert trash_path.startswith(f"{TRASH_BASE_PATH}/20260304/")
-        assert path in renamed
+        assert any("20260304" in p for p in existing)
 
     def test_skips_nonexistent_path(self):
         from utils.soft_delete import safe_delete
@@ -192,10 +187,10 @@ class TestPurgeOldTrash:
             # 20260303 > 20260202 → เก็บ
             purge_old_trash(sc, keep_days=30)
 
-        deleted_paths = {str(c.args[0].toString()) for c in fs.delete.call_args_list}
-        assert any("20260101" in p for p in deleted_paths)
-        assert any("20260201" in p for p in deleted_paths)
-        assert not any("20260303" in p for p in deleted_paths)
+        # หลัง purge — 20260101 และ 20260201 ต้องหายจาก existing
+        assert not any("20260101" in p for p in existing)
+        assert not any("20260201" in p for p in existing)
+        assert any("20260303" in p for p in existing)
 
     def test_no_error_when_trash_empty(self):
         from utils.soft_delete import purge_old_trash

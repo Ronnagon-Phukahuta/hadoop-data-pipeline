@@ -16,7 +16,8 @@ from conftest import make_hdfs_fs, make_mock_sc as _make_mock_sc
 
 
 def make_mock_fs(existing_paths):
-    fs, _ = make_hdfs_fs(existing_paths)
+    fs, existing = make_hdfs_fs(existing_paths)
+    fs._existing = existing  # expose existing set สำหรับ assert
     return fs
 
 
@@ -28,8 +29,8 @@ def make_mock_sc(fs):
 # ── Test 1: สำเร็จปกติ ────────────────────────────────────────────
 def test_swap_success():
     """swap สำเร็จ — backup, swap, แล้ว safe_delete _old ไป trash"""
-    existing = ["/data/year=2024"]  # ไม่มี _old ค้างอยู่
-    fs = make_mock_fs(existing)
+    fs = make_mock_fs(["/data/year=2024"])  # ไม่มี _old ค้างอยู่
+    existing = fs._existing
     sc = make_mock_sc(fs)
 
     from utils.retry import _hdfs_swap
@@ -39,11 +40,10 @@ def test_swap_success():
     fs.rename.assert_any_call("/data/year=2024", "/data/year=2024_old")
     # แล้วค่อย swap
     fs.rename.assert_any_call("/data/year=2024_tmp", "/data/year=2024")
-    # step 3: safe_delete เรียก fs.rename(_old → trash) ไม่ใช่ fs.delete
-    # ทั้งหมด 3 rename calls: backup, swap, safe_delete(_old→trash)
-    rename_dsts = [str(c.args[1]) for c in fs.rename.call_args_list]
-    assert any("trash" in d for d in rename_dsts), (
-        "expected _old to be renamed into trash path, got: " + str(rename_dsts)
+    # step 3: safe_delete ย้าย _old → trash
+    # ตรวจจาก existing set — หลัง swap สำเร็จ trash ต้องมี item ใหม่
+    assert any("trash" in p for p in existing), (
+        "expected _old to be in trash, existing=" + str(existing)
     )
 
 

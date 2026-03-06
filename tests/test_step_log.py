@@ -10,6 +10,17 @@ import pytest
 from conftest import make_mock_log
 
 
+def get_kwargs(call_obj):
+    """Python 3.7 compatible — ดึง kwargs จาก mock call"""
+    # Python 3.8+: call.kwargs เป็น dict
+    # Python 3.7:  call[1] เป็น dict
+    kw = call_obj[1]
+    if isinstance(kw, dict):
+        return kw
+    return dict(call_obj[1])
+
+
+
 class TestStepLog:
 
     def test_logs_start_and_success(self):
@@ -36,7 +47,7 @@ class TestStepLog:
         # หา SUCCESS call และตรวจ duration_ms
         for c in log.info.call_args_list:
             if "SUCCESS" in str(c):
-                kwargs = c.kwargs if hasattr(c, 'kwargs') else c[1]
+                kwargs = get_kwargs(c)
                 assert "duration_ms" in kwargs
                 assert isinstance(kwargs["duration_ms"], int)
                 assert kwargs["duration_ms"] >= 0
@@ -53,7 +64,7 @@ class TestStepLog:
 
         for c in log.info.call_args_list:
             if "SUCCESS" in str(c):
-                kwargs = c.kwargs if hasattr(c, 'kwargs') else c[1]
+                kwargs = get_kwargs(c)
                 assert kwargs.get("dataset") == "finance"
                 assert kwargs.get("year") == 2024
                 assert kwargs.get("step") == "atomic_write"
@@ -69,7 +80,7 @@ class TestStepLog:
 
         for c in log.info.call_args_list:
             if "SUCCESS" in str(c):
-                kwargs = c.kwargs if hasattr(c, 'kwargs') else c[1]
+                kwargs = get_kwargs(c)
                 assert kwargs.get("rows") == 1500
                 assert kwargs.get("version") == "v_20260306_120000"
                 break
@@ -98,7 +109,7 @@ class TestStepLog:
                 raise RuntimeError("disk full")
 
         for c in log.error.call_args_list:
-            kwargs = c.kwargs if hasattr(c, 'kwargs') else c[1]
+            kwargs = get_kwargs(c)
             assert "error" in kwargs
             assert "disk full" in kwargs["error"]
             assert "duration_ms" in kwargs
@@ -122,7 +133,7 @@ class TestStepLog:
                 raise RuntimeError("OOM")
 
         for c in log.error.call_args_list:
-            kwargs = c.kwargs if hasattr(c, 'kwargs') else c[1]
+            kwargs = get_kwargs(c)
             assert kwargs.get("rows_processed") == 500
             break
 
@@ -134,6 +145,6 @@ class TestStepLog:
             pass
 
         start_call = log.info.call_args_list[0]
-        kwargs = start_call.kwargs if hasattr(start_call, 'kwargs') else start_call[1]
+        kwargs = get_kwargs(start_call)
         assert kwargs.get("step") == "versioning"
         assert kwargs.get("dataset") == "finance"
