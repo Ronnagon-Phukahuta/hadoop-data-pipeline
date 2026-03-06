@@ -8,78 +8,24 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime
 
 
-# ── Helpers: สร้าง mock sc ที่จำลอง HDFS filesystem ──────────────
+# ── Helpers: import จาก conftest ─────────────────────────────────
+from conftest import make_mock_sc as _make_mock_sc, make_hdfs_fs
+
 
 def make_sc(existing_paths=None):
-    """
-    สร้าง mock SparkContext ที่มี _jvm ครบ
-    existing_paths: set ของ path ที่ "มีอยู่" ใน HDFS
-    """
-    existing = set(existing_paths or [])
-    renamed = {}  # src -> dst
+    """wrapper ที่คืน (sc, fs, existing, renamed) เหมือนเดิม"""
+    fs, existing = make_hdfs_fs(existing_paths)
+    renamed = {}
+    _orig_rename = fs.rename.side_effect
 
-    sc = MagicMock()
+    def rename_track(src, dst):
+        result = _orig_rename(src, dst)
+        if result:
+            renamed[str(src)] = str(dst)
+        return result
 
-    # mock Path objects คืน string เพื่อง่ายต่อการ assert
-    def make_path(p):
-        path_mock = MagicMock()
-        path_mock.toString.return_value = p
-        path_mock.getName.return_value = p.split("/")[-1]
-        path_mock.getParent.side_effect = lambda: make_path("/".join(p.split("/")[:-1]))
-        return path_mock
-
-    sc._jvm.org.apache.hadoop.fs.Path.side_effect = make_path
-
-    # mock FileSystem
-    fs = MagicMock()
-
-    def exists(path_mock):
-        p = path_mock.toString().rstrip("/")
-        # match exact หรือ เป็น prefix ของ path ที่มีอยู่ (intermediate dir)
-        return p in existing or any(e.startswith(p + "/") for e in existing)
-
-    def rename(src_mock, dst_mock):
-        src = src_mock.toString()
-        dst = dst_mock.toString()
-        if src in existing:
-            existing.discard(src)
-            existing.add(dst)
-            renamed[src] = dst
-            return True
-        return False
-
-    def delete(path_mock, recursive):
-        existing.discard(path_mock.toString())
-
-    def mkdirs(path_mock):
-        pass
-
-    def listStatus(path_mock):
-        prefix = path_mock.toString().rstrip("/")
-        out = []
-        seen_dirs = set()
-        for p in list(existing):  # snapshot กัน set change ระหว่าง iterate
-            if not p.startswith(prefix + "/"):
-                continue
-            rest = p[len(prefix) + 1:]
-            child_name = rest.split("/")[0]
-            child_path = f"{prefix}/{child_name}"
-            if child_path not in seen_dirs:
-                seen_dirs.add(child_path)
-                status = MagicMock()
-                status.getPath.return_value = make_path(child_path)
-                out.append(status)
-        return out
-
-    fs.exists.side_effect = exists
-    fs.rename.side_effect = rename
-    fs.delete.side_effect = delete
-    fs.mkdirs.side_effect = mkdirs
-    fs.listStatus.side_effect = listStatus
-
-    sc._jvm.java.net.URI.create.return_value = MagicMock()
-    sc._jvm.org.apache.hadoop.fs.FileSystem.get.return_value = fs
-
+    fs.rename.side_effect = rename_track
+    sc, _, _ = _make_mock_sc(fs=fs)
     return sc, fs, existing, renamed
 
 

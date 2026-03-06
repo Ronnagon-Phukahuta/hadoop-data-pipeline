@@ -12,18 +12,14 @@ from unittest.mock import MagicMock, patch
 
 
 # ── Helpers ───────────────────────────────────────────────────────
-def make_mock_sc():
-    sc = MagicMock()
-    sc._jvm.java.net.URI.create.return_value = MagicMock()
-    sc._jsc.hadoopConfiguration.return_value = MagicMock()
-    sc._jvm.org.apache.hadoop.fs.Path.side_effect = lambda p: p
+from conftest import make_mock_sc as _make_mock_sc
 
-    fs = MagicMock()
+
+def make_mock_sc():
+    """versioning ต้องการ fs.getFileChecksum และ fs.exists=False เป็น default"""
+    sc, fs, _ = _make_mock_sc()
     fs.exists.return_value = False
-    fs.rename.return_value = True
-    # checksum ต้อง return string ไม่งั้น json.dumps fail
     fs.getFileChecksum.return_value.toString.return_value = "mock_checksum_abc123"
-    sc._jvm.org.apache.hadoop.fs.FileSystem.get.return_value = fs
     return sc, fs
 
 

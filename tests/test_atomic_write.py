@@ -11,41 +11,17 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-# ── Helpers: สร้าง mock HDFS filesystem ───────────────────────────
+# ── Helpers: import จาก conftest ─────────────────────────────────
+from conftest import make_hdfs_fs, make_mock_sc as _make_mock_sc
+
+
 def make_mock_fs(existing_paths):
-    """สร้าง mock fs ที่มี path ตาม existing_paths และ rename update state จริง"""
-    existing = set(existing_paths)
-    fs = MagicMock()
-
-    def exists(p):
-        return str(p) in existing
-
-    def rename(src, dst):
-        s, d = str(src), str(dst)
-        if s in existing:
-            existing.discard(s)
-            existing.add(d)
-        return True
-
-    fs.exists.side_effect = exists
-    fs.rename.side_effect = rename
-    fs.delete.return_value = True
-    fs.mkdirs.return_value = True
+    fs, _ = make_hdfs_fs(existing_paths)
     return fs
 
 
 def make_mock_sc(fs):
-    """
-    สร้าง mock SparkContext
-    ใช้ return_value (ไม่ใช่ side_effect) เพื่อให้ FileSystem.get(...)
-    คืน fs เดิมเสมอ ไม่ว่า argument จะต่างกัน
-    (retry._get_fs และ soft_delete._get_fs เรียก FileSystem.get ด้วย uri ต่างกัน)
-    """
-    sc = MagicMock()
-    sc._jvm.java.net.URI.create.return_value = MagicMock()
-    sc._jsc.hadoopConfiguration.return_value = MagicMock()
-    sc._jvm.org.apache.hadoop.fs.FileSystem.get.return_value = fs
-    sc._jvm.org.apache.hadoop.fs.Path.side_effect = lambda p: p  # path เป็น string เลย
+    sc, _, _ = _make_mock_sc(fs=fs)
     return sc
 
 
