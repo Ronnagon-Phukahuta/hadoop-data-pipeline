@@ -5,7 +5,10 @@ from pyspark.sql.functions import col, lit
 from typing import List, Dict
 
 from data_quality import run_quality_checks
-from utils.hdfs import hdfs_ls_recursive, hdfs_touch, extract_year_from_path
+from utils.hdfs import (
+    hdfs_ls_recursive, hdfs_touch, hdfs_write_done,
+    is_already_processed, compute_file_checksum, extract_year_from_path,
+)
 from utils.alerts import send_quality_alert
 from utils.retry import atomic_write_table, with_retry
 from utils.versioning import create_version, cleanup_old_versions
@@ -21,9 +24,9 @@ spark = SparkSession.builder \
 sc = spark.sparkContext
 
 # ===== Config =====
-raw_path      = "hdfs://namenode:8020/datalake/raw/finance-itsc"
-staging_path  = "hdfs://namenode:8020/datalake/staging/finance-itsc_wide"
-curated_path  = "hdfs://namenode:8020/datalake/curated/finance-itsc_long"
+raw_path      = "hdfs://namenode:8020/datalake/raw/finance_itsc"
+staging_path  = "hdfs://namenode:8020/datalake/staging/finance_itsc_wide"
+curated_path  = "hdfs://namenode:8020/datalake/curated/finance_itsc_long"
 wide_table    = "finance_itsc_wide"
 long_table    = "finance_itsc_long"
 database_name = "default"
@@ -38,18 +41,23 @@ log.info("PART 1 started: Raw -> Staging (Wide) — Incremental")
 all_files = with_retry(hdfs_ls_recursive, sc, raw_path, label="scan HDFS")
 
 csv_files    = [f for f in all_files if f.endswith(".csv")]
-done_files   = set(f for f in all_files if f.endswith(".done"))
 failed_files = set(f for f in all_files if f.endswith(".failed"))
 
-pending_files = [
-    f for f in csv_files
-    if f + ".done" not in done_files and f + ".failed" not in failed_files
-]
+# ── Idempotency Check: กรอง pending ด้วย checksum ──────────
+# แทน: if f + ".done" not in done_files
+pending_files = []
+for f in csv_files:
+    if f + ".failed" in failed_files:
+        continue  # DQ failed ก่อนหน้า → skip
+    if is_already_processed(sc, f):
+        continue  # checksum ตรงกัน → skip
+    pending_files.append(f)
 
+done_count   = len(csv_files) - len(pending_files) - len([f for f in csv_files if f + ".failed" in failed_files])
 log.info(
     "File scan complete",
     csv_found=len(csv_files),
-    already_processed=len([f for f in csv_files if f + ".done" in done_files]),
+    already_processed=done_count,
     dq_failed=len([f for f in csv_files if f + ".failed" in failed_files]),
     pending=len(pending_files),
 )
@@ -69,7 +77,6 @@ else:
     log.info("Years to update", years=sorted(pending_by_year.keys()))
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
 
-    # FIX 3: ใช้ failed_years แทน del pending_by_year ใน loop
     failed_years = set()
 
     for year, files in sorted(pending_by_year.items()):
@@ -77,10 +84,7 @@ else:
 
         # ── Step 2: Read CSV ─────────────────────────────────
         try:
-            # FIX 1: แก้ closure bug โดยผูก year และ files เป็น default args
             def _read_csv(_files=files, _year=year):
-                # ปิด inferSchema เพื่อป้องกัน date/details ถูก infer เป็น double
-                # แล้ว cast เองทั้งหมด
                 df = spark.read.option("header", "true").option("inferSchema", "false").csv(_files)
                 df = df.withColumn("year", lit(_year).cast("int"))
                 for c in df.columns:
@@ -99,7 +103,6 @@ else:
         # ── Step 3: Data Quality ──────────────────────────────
         dq_report = {}
         try:
-            # FIX 2: with_retry ไม่รับ positional args ของ fn — ใช้ lambda แทน
             dq_passed, dq_report = with_retry(
                 lambda: run_quality_checks(df, files[0]),
                 label=f"data quality year={year}"
@@ -133,8 +136,17 @@ else:
                 partition_col="year",
                 partition_value=year,
             )
+
+            # เขียน .done พร้อม checksum แทน hdfs_touch เปล่า
             for f in files:
-                with_retry(hdfs_touch, sc, f + ".done", label=f"touch .done {f}")
+                checksum = with_retry(
+                    compute_file_checksum, sc, f,
+                    label=f"checksum {f.split('/')[-1]}"
+                )
+                with_retry(
+                    hdfs_write_done, sc, f, checksum,
+                    label=f"write .done {f.split('/')[-1]}"
+                )
 
             # ===== VERSIONING =====
             create_version(sc, df, files[0], year)
@@ -146,7 +158,6 @@ else:
             failed_years.add(year)
             continue
 
-    # FIX 3: กรอง pending_by_year โดยเอาเฉพาะ year ที่สำเร็จ
     for year in failed_years:
         pending_by_year.pop(year, None)
 
@@ -160,8 +171,6 @@ log.info("PART 2 started: Staging (Wide) -> Curated (Long)")
 
 years_to_update = set(pending_by_year.keys())
 
-# เพิ่ม years ที่อยู่ใน staging แล้วแต่ยังไม่มีใน curated
-# (กรณี PART 2 fail แล้ว re-run — PART 1 จะ skip แต่ PART 2 ต้องรันต่อได้)
 try:
     staging_years = set(
         int(row[0].split("=")[1])
@@ -194,8 +203,6 @@ else:
 
         # ── Step 5: Read Wide ─────────────────────────────────
         try:
-            # FIX 1: แก้ closure bug โดยผูก year เป็น default arg
-            # อ่านตรงจาก parquet แทน spark.sql เพื่อหลีกเลี่ยง Hive schema type mismatch
             def _read_wide(_year=year):
                 df = spark.read.option("mergeSchema", "true").parquet(f"{staging_path}/year={_year}")
                 return df.filter(
@@ -209,16 +216,12 @@ else:
 
         # ── Step 6: Transform Wide -> Long ────────────────────
         try:
-            # FIX 1: แก้ closure bug โดยผูก df_wide เป็น default arg
             def _transform(_df_wide=df_wide, _id_columns=id_columns, _exclude_columns=exclude_columns):
                 amount_cols = [c for c in _df_wide.columns if c not in _id_columns + _exclude_columns]
-
-                # cast ทุก amount column เป็น double ก่อน เพราะ schema evolution อาจเพิ่ม STRING column
                 df_casted = _df_wide.select(
                     *_id_columns,
                     *[col(c).cast("double").alias(c) for c in amount_cols]
                 )
-
                 stack_expr = ", ".join([f"'{c}', `{c}`" for c in amount_cols])
                 id_exprs = [f"`{c}`" for c in _id_columns]
                 return df_casted.selectExpr(
