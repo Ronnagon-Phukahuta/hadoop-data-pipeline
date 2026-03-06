@@ -97,6 +97,7 @@ jobs:
         run: |
           docker run --rm \
             -v $(pwd)/jobs:/jobs \
+            -v $(pwd)/tests:/jobs/tests \
             spark-test:ci \
             bash -c "
               python3 -m pip install pytest pytest-cov pytest-html -q &&
