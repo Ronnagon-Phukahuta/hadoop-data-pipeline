@@ -97,15 +97,17 @@ jobs:
         run: |
           docker run --rm \
             -v $(pwd)/jobs:/jobs \
-            -v $(pwd)/tests:/jobs/tests \
             spark-test:ci \
             bash -c "
-              python3 -m pip install pytest pytest-html -q &&
+              python3 -m pip install pytest pytest-cov pytest-html -q &&
               cd /jobs &&
               PYSPARK_PYTHON=python3 \
               PYSPARK_DRIVER_PYTHON=python3 \
-              PYTHONPATH=/spark/python:/spark/python/lib/py4j-0.10.7-src.zip \
+              PYTHONPATH=/jobs:/spark/python:/spark/python/lib/py4j-0.10.7-src.zip \
               python3 -m pytest tests/test_pipeline_spark.py -v \
+                --cov=. \
+                --cov-report=term-missing \
+                --cov-report=xml:reports/coverage-spark.xml \
                 --junitxml=reports/junit.xml
             "
 
@@ -115,6 +117,13 @@ jobs:
         with:
           name: spark-test-report
           path: reports/junit.xml
+
+      - name: Upload Spark coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spark-coverage-report
+          path: reports/coverage-spark.xml
 
   # ─────────────────────────────────────────
   # 3. Docker build (Spark)
