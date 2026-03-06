@@ -135,7 +135,7 @@ def _parse_error(e: Exception) -> str:
         from py4j.protocol import Py4JJavaError
         if isinstance(e, Py4JJavaError):
             java_str = str(e.java_exception)
-            lines = [l.strip() for l in java_str.splitlines() if l.strip()]
+            lines = [line.strip() for line in java_str.splitlines() if line.strip()]
 
             # หา root cause — บรรทัดหลัง "Caused by:" สุดท้าย
             root_cause_idx = None

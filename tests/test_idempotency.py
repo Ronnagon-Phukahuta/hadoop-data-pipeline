@@ -8,7 +8,6 @@ Tests สำหรับ idempotency check ใน utils/hdfs.py
 
 import json
 import pytest
-from unittest.mock import MagicMock
 
 
 # ── Mock helpers: import จาก conftest ────────────────────────────

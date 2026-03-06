@@ -5,7 +5,6 @@ Tests สำหรับ step_log context manager ใน logger.py
 """
 
 import pytest
-from unittest.mock import patch, call
 
 
 from conftest import make_mock_log
