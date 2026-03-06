@@ -4,7 +4,7 @@ Tests สำหรับ soft_delete.py — ใช้ mock HDFS (ไม่ต้
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from datetime import datetime
 
 
@@ -135,7 +135,7 @@ class TestSafeDelete:
 class TestListTrash:
 
     def test_returns_empty_when_no_trash(self):
-        from utils.soft_delete import list_trash, TRASH_BASE_PATH
+        from utils.soft_delete import list_trash
 
         sc, fs, existing, _ = make_sc(existing_paths=set())
         result = list_trash(sc)
@@ -252,7 +252,7 @@ class TestPurgeOldTrash:
         assert not any("20260303" in p for p in deleted_paths)
 
     def test_no_error_when_trash_empty(self):
-        from utils.soft_delete import purge_old_trash, TRASH_BASE_PATH
+        from utils.soft_delete import purge_old_trash
 
         sc, fs, existing, _ = make_sc(existing_paths=set())
         # ไม่ควร raise
