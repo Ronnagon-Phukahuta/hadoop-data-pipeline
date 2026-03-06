@@ -70,6 +70,8 @@ services:
          - AIRFLOW__WEBSERVER__SECRET_KEY=dc42cf13f85423e84083e527f2be293a75fd0a170d78ff83e976933365cdd896
          - PYSPARK_PYTHON=python3
          - PYSPARK_DRIVER_PYTHON=python3
+         - SPARK_DRIVER_EXTRA_JAVA_OPTIONS=-Dlog4j.configuration=file:/spark/conf/log4j.properties
+         - SPARK_EXECUTOR_EXTRA_JAVA_OPTIONS=-Dlog4j.configuration=file:/spark/conf/log4j.properties
       ports:
          - "8080:8080"
          - "7077:7077"
@@ -79,6 +81,7 @@ services:
          - ./hive-site.xml:/spark/conf/hive-site.xml
          - ./jobs:/jobs
          - ./tests:/jobs/tests
+         - ./spark/conf/log4j.properties:/spark/conf/log4j.properties:ro
 
    spark-worker:
       image: bde2020/spark-worker:2.4.5-hadoop2.7
@@ -89,10 +92,12 @@ services:
          - AIRFLOW__WEBSERVER__SECRET_KEY=dc42cf13f85423e84083e527f2be293a75fd0a170d78ff83e976933365cdd896
          - PYSPARK_PYTHON=python3
          - PYSPARK_DRIVER_PYTHON=python3
+         - SPARK_EXECUTOR_EXTRA_JAVA_OPTIONS=-Dlog4j.configuration=file:/spark/conf/log4j.properties
       depends_on:
          - spark-master
       volumes:
          - ./hive-site.xml:/spark/conf/hive-site.xml
+         - ./spark/conf/log4j.properties:/spark/conf/log4j.properties:ro
 
    airflow-postgres:
       image: postgres:13

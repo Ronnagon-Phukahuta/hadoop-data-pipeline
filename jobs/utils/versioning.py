@@ -52,7 +52,8 @@ def create_version(
     version_id = timestamp.strftime("v_%Y%m%d_%H%M%S")
     version_path = f"{VERSIONS_BASE_PATH}/year={year}/{version_id}"
 
-    log.info("Creating version snapshot", version=version_id, year=year, source=source_file)
+    log.info("Creating version snapshot", version=version_id, year=year,
+             source=source_file.split("/")[-1], path=version_path)
 
     # เขียน snapshot
     df.write.mode("overwrite").parquet(version_path)
@@ -75,11 +76,12 @@ def create_version(
     _write_metadata(sc, version_path, metadata)
 
     log.info(
-        "Version created",
+        "✅ Version created",
         version=version_id,
         year=year,
         rows=row_count,
-        checksum=checksum,
+        columns=len(df.columns),
+        checksum=checksum[:12],
         path=version_path,
     )
 
@@ -168,6 +170,7 @@ def cleanup_old_versions(sc, year: int, keep: int = KEEP_VERSIONS):
         kept=len(to_keep),
         trashed=len(to_delete),
         latest=to_keep[0]["version"] if to_keep else None,
+        versions_kept=[v["version"] for v in to_keep],
     )
 
 

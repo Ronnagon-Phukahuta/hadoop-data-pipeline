@@ -126,7 +126,7 @@ def check_remaining_decreasing(df: DataFrame) -> Tuple[bool, List[str]]:
 
 def run_quality_checks(df: DataFrame, filepath: str) -> Tuple[bool, str]:
     filename = filepath.split("/")[-1]
-    log.info("Data quality check started", file=filename)
+    log.info("Data quality check started", file=filename, checks=5)
 
     all_errors, all_warnings = [], []
     passed = True
@@ -141,21 +141,32 @@ def run_quality_checks(df: DataFrame, filepath: str) -> Tuple[bool, str]:
 
     for name, (ok, errors) in checks:
         if ok and not errors:
-            log.info("Check passed", file=filename, check=name)
+            log.info(f"✅ {name}", file=filename, check=name, result="passed")
         else:
             has_fatal = any("❌" in e for e in errors)
             if has_fatal:
                 passed = False
-                log.error("Check failed", file=filename, check=name, errors=errors)
+                for e in errors:
+                    log.error(f"❌ {name} — {e}", file=filename, check=name, result="failed")
                 all_errors.extend(errors)
             else:
-                log.warning("Check warning", file=filename, check=name, warnings=errors)
+                for e in errors:
+                    log.warning(f"⚠️  {name} — {e}", file=filename, check=name, result="warning")
                 all_warnings.extend(errors)
 
     if passed:
-        log.info("All quality checks passed", file=filename)
+        log.info(
+            "All quality checks passed",
+            file=filename,
+            warnings=len(all_warnings),
+        )
     else:
-        log.error("Quality checks failed", file=filename, error_count=len(all_errors))
+        log.error(
+            "Quality checks FAILED",
+            file=filename,
+            fatal=len(all_errors),
+            warnings=len(all_warnings),
+        )
 
     report = f"File: {filepath}\n\n"
     if all_errors:
