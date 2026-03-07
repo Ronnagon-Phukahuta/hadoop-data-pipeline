@@ -13,7 +13,7 @@ Usage:
 """
 
 from typing import Dict, List, Set
-from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
 
 from data_quality import run_quality_checks

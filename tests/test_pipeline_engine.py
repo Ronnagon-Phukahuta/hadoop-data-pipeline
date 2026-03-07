@@ -11,11 +11,10 @@ Tests for engine/pipeline.py (Item 2 — Pipeline Engine Abstraction)
 """
 
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-from typing import List
+from unittest.mock import MagicMock, patch
 
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "jobs"))
 
 from conftest import make_mock_sc, make_mock_log
@@ -310,7 +309,6 @@ class TestRunPipelineIncompleteYears:
         # staging มีปี 2023, curated ไม่มี → incomplete
         staging_rows = [MagicMock()]
         staging_rows[0].__getitem__ = lambda self, i: "year=2023"
-        curated_collect = MagicMock(return_value=[])
 
         call_count = [0]
         def sql_side(query):

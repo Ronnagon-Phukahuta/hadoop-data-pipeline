@@ -18,14 +18,13 @@ Priority: CLI arg > dag_run.conf > Airflow Variable > default
 
 import sys
 from pathlib import Path
+from pyspark.sql import SparkSession
+from datasets.registry import load_dataset
 
 # ── เพิ่ม project root เข้า sys.path สำหรับ spark-submit ───
 PROJECT_ROOT = str(Path(__file__).parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
-
-from pyspark.sql import SparkSession
-from datasets.registry import load_dataset
 
 
 def _resolve_dataset_name() -> str:
