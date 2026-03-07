@@ -1,6 +1,10 @@
 # dashboard/services/monitoring.py
 """
-Parse etl.log และ etl.error.log สำหรับ Monitoring Dashboard
+Parse etl.log สำหรับ Monitoring Dashboard
+
+Improvements:
+- st.cache_data(ttl=60) ป้องกัน re-parse log ทุก interaction
+- step_durations: parse duration_ms ของแต่ละ step ต่อ run
 """
 
 import json
@@ -8,11 +12,38 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any
 
+import streamlit as st
+
 ETL_LOG = os.environ.get("ETL_LOG_PATH", "/jobs/logs/etl.log")
+
+PIPELINE_STEPS = [
+    "scan_hdfs",
+    "read_csv",
+    "data_quality",
+    "atomic_write",
+    "write_done",
+    "versioning",
+    "check_partitions",
+    "read_wide",
+    "transform",
+    "write_curated",
+]
+
+STEP_LABELS = {
+    "scan_hdfs":       "Scan HDFS",
+    "read_csv":        "Read CSV",
+    "data_quality":    "Data Quality",
+    "atomic_write":    "Atomic Write",
+    "write_done":      "Write Done",
+    "versioning":      "Versioning",
+    "check_partitions":"Check Partitions",
+    "read_wide":       "Read Wide",
+    "transform":       "Transform",
+    "write_curated":   "Write Curated",
+}
 
 
 def _parse_log_lines(path: str) -> List[Dict]:
-    """อ่านและ parse JSON log ทีละบรรทัด ข้ามบรรทัดที่ invalid"""
     records = []
     if not os.path.exists(path):
         return records
@@ -28,23 +59,11 @@ def _parse_log_lines(path: str) -> List[Dict]:
     return records
 
 
-def _extract(record: Dict) -> Dict:
-    """ดึง fields ที่ใช้บ่อยออกมา"""
-    r = record.get("record", {})
-    extra = r.get("extra", {})
-    return {
-        "timestamp": r.get("time", {}).get("repr", ""),
-        "level": r.get("level", {}).get("name", ""),
-        "message": r.get("message", record.get("text", "")),
-        "module": extra.get("module", r.get("name", "")),
-        "extra": extra,
-    }
-
-
+@st.cache_data(ttl=60)
 def get_pipeline_runs() -> List[Dict]:
     """
     ดึง pipeline run แต่ละครั้ง โดยดูจาก process_id
-    คืน list เรียงจากล่าสุด
+    คืน list เรียงจากล่าสุด — cache 60 วินาที
     """
     records = _parse_log_lines(ETL_LOG)
     runs = {}
@@ -71,38 +90,46 @@ def get_pipeline_runs() -> List[Dict]:
                 "dq_checks": {"pass": 0, "fail": 0},
                 "files": {"found": 0, "processed": 0, "failed": 0, "pending": 0},
                 "errors": [],
+                "step_durations": {},  # {step: total_ms}
             }
 
         run = runs[pid]
         run["end_time"] = ts
 
+        step = extra.get("step", "")
+        duration_ms = extra.get("duration_ms")
+
+        # Step duration — sum ถ้า step เดียวกันเกิดหลายปี
+        if step and duration_ms is not None and step in PIPELINE_STEPS:
+            run["step_durations"][step] = run["step_durations"].get(step, 0) + duration_ms
+
         # File scan
-        if msg == "File scan complete":
+        if step == "scan_hdfs" and extra.get("csv_found") is not None:
             run["files"]["found"] = extra.get("csv_found", 0)
-            run["files"]["processed"] = extra.get("already_processed", 0)
+            run["files"]["processed"] = extra.get("already_done", 0)
             run["files"]["failed"] = extra.get("dq_failed", 0)
             run["files"]["pending"] = extra.get("pending", 0)
 
         # DQ pass/fail
-        elif msg == "Check passed":
+        elif msg.startswith("✅ ") and extra.get("check"):
             run["dq_checks"]["pass"] += 1
-        elif msg == "All quality checks passed":
-            pass
-        elif level == "ERROR" and "quality" in msg.lower():
+        elif msg.startswith("❌ ") and extra.get("check"):
             run["dq_checks"]["fail"] += 1
 
-        # Year success/fail
-        elif msg == "Year written to staging":
+        # Year success
+        elif step == "write_curated" and extra.get("rows") is not None:
             year = extra.get("year")
             if year and year not in run["years_processed"]:
                 run["years_processed"].append(year)
+
+        # Year DQ fail
         elif msg == "Data quality check error — skipping year":
             year = extra.get("year")
             if year and year not in run["years_failed"]:
                 run["years_failed"].append(year)
 
         # Pipeline complete
-        elif "ETL Pipeline completed" in msg:
+        elif "ETL completed" in msg:
             run["status"] = "success" if not run["years_failed"] else "partial"
 
         # Errors
@@ -113,7 +140,6 @@ def get_pipeline_runs() -> List[Dict]:
                 "error": extra.get("error", ""),
             })
 
-    # คำนวณ duration
     result = []
     for run in runs.values():
         try:
@@ -131,8 +157,9 @@ def get_pipeline_runs() -> List[Dict]:
     return sorted(result, key=lambda x: x["start_time"], reverse=True)
 
 
+@st.cache_data(ttl=60)
 def get_dq_stats() -> Dict[str, Any]:
-    """สถิติ DQ pass/fail rate รวมทุก run"""
+    """สถิติ DQ pass/fail rate รวมทุก run — cache 60 วินาที"""
     records = _parse_log_lines(ETL_LOG)
     stats = {
         "Schema": {"pass": 0, "fail": 0},
@@ -148,9 +175,12 @@ def get_dq_stats() -> Dict[str, Any]:
         msg = r.get("message", "")
         check = extra.get("check", "")
 
-        if msg == "Check passed" and check in stats:
+        if not check or check not in stats:
+            continue
+
+        if msg.startswith("✅ "):
             stats[check]["pass"] += 1
-        elif msg == "Check failed" and check in stats:
+        elif msg.startswith("❌ "):
             stats[check]["fail"] += 1
 
     return stats
@@ -161,7 +191,6 @@ VERSIONS_PATH = "/datalake/versions/finance_itsc"
 
 
 def _webhdfs_ls(path: str) -> List[Dict]:
-    """List directory ผ่าน WebHDFS REST API"""
     import requests
     url = f"{WEBHDFS_URL}/webhdfs/v1{path}?op=LISTSTATUS"
     try:
@@ -174,7 +203,6 @@ def _webhdfs_ls(path: str) -> List[Dict]:
 
 
 def _webhdfs_read(path: str) -> str:
-    """อ่านไฟล์ผ่าน WebHDFS"""
     import requests
     url = f"{WEBHDFS_URL}/webhdfs/v1{path}?op=OPEN"
     try:
@@ -186,11 +214,11 @@ def _webhdfs_read(path: str) -> str:
     return ""
 
 
+@st.cache_data(ttl=60)
 def get_version_history() -> List[Dict]:
-    """ดึง version snapshot จาก HDFS โดยตรง (ข้อมูล accurate 100%)"""
+    """ดึง version snapshot จาก HDFS — cache 60 วินาที"""
     versions = []
 
-    # list ปีทั้งหมด
     year_dirs = _webhdfs_ls(VERSIONS_PATH)
     for year_dir in year_dirs:
         if year_dir["type"] != "DIRECTORY":
@@ -198,7 +226,6 @@ def get_version_history() -> List[Dict]:
         year_path = f"{VERSIONS_PATH}/{year_dir['pathSuffix']}"
         year = year_dir["pathSuffix"].replace("year=", "")
 
-        # list versions ในแต่ละปี
         version_dirs = _webhdfs_ls(year_path)
         for v_dir in version_dirs:
             if v_dir["type"] != "DIRECTORY" or not v_dir["pathSuffix"].startswith("v_"):
@@ -206,16 +233,17 @@ def get_version_history() -> List[Dict]:
             version_id = v_dir["pathSuffix"]
             meta_path = f"{year_path}/{version_id}/_version.json"
 
-            # อ่าน metadata
             meta_text = _webhdfs_read(meta_path)
             if meta_text:
                 try:
                     meta = json.loads(meta_text)
+                    raw_checksum = meta.get("checksum", "")
+                    checksum = raw_checksum.split(":")[-1][:12] if ":" in raw_checksum else raw_checksum[:12]
                     versions.append({
                         "version": meta.get("version", version_id),
                         "year": meta.get("year", year),
                         "rows": meta.get("row_count", 0),
-                        "checksum": meta.get("checksum", ""),
+                        "checksum": checksum,
                         "timestamp": meta.get("timestamp", ""),
                         "path": f"hdfs://namenode:8020{year_path}/{version_id}",
                     })
