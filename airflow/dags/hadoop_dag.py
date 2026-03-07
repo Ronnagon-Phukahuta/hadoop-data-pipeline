@@ -72,7 +72,6 @@ def send_success_summary(**context):
 
     dag_id = context["dag"].dag_id
     execution_date = context["logical_date"]
-    # duration อาจเป็น None ตอนรัน ใช้ end_date - start_date แทน
     ti = context["task_instance"]
     start = ti.start_date
     end = ti.end_date
@@ -83,12 +82,16 @@ def send_success_summary(**context):
     <h3>✅ ETL Pipeline Completed</h3>
     <table>
         <tr><td><b>DAG</b></td><td>{dag_id}</td></tr>
+        <tr><td><b>Dataset</b></td><td>{DATASET_NAME}</td></tr>
         <tr><td><b>Execution Date</b></td><td>{execution_date}</td></tr>
         <tr><td><b>Duration</b></td><td>{duration_str}</td></tr>
     </table>
     <p>ข้อมูลใน Hive พร้อมใช้งานแล้ว</p>
     """
     send_email(to=alert_email, subject=subject, html_content=body)
+
+
+DATASET_NAME = "finance_itsc"  # 1 DAG = 1 dataset
 
 
 # ============================================================
@@ -113,19 +116,19 @@ with DAG(
     dag_id="finance_etl_pipeline",
     default_args=default_args,
     start_date=datetime(2026, 1, 1),
-    schedule="0 0 1 1 *",
+    schedule="0 0 1 1 *",  # ปีละครั้ง — 1 ม.ค. เที่ยงคืน
     catchup=False,
     tags=["finance", "etl"],
 ) as dag:
 
     wait_for_file = BashOperator(
         task_id="wait_for_raw_file",
-        bash_command="docker exec namenode hdfs dfs -test -e /datalake/raw/finance_itsc",
+        bash_command=f"docker exec hive-server hdfs dfs -test -e /datalake/raw/{DATASET_NAME}",
     )
 
     run_pipeline = BashOperator(
         task_id="run_spark_pipeline",
-        bash_command="docker exec spark-master spark-submit /jobs/finance_itsc_pipeline_quality.py",
+        bash_command=f"docker exec spark-master spark-submit /jobs/engine/run_pipeline.py {DATASET_NAME}",
     )
 
     notify_success = PythonOperator(
