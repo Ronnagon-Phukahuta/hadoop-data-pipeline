@@ -6,17 +6,13 @@ Tests for datasets/registry.py (Item 1 — Dataset Registry)
 
 import pytest
 from pathlib import Path
-from unittest.mock import patch
 import yaml
-import tempfile
-import os
 
 from datasets.registry import (
     load_dataset,
     build_category_mapping_text,
     build_schema_prompt,
     DatasetConfig,
-    ColumnDef,
 )
 
 

@@ -1,4 +1,4 @@
-from datasets.registry import load_dataset, build_schema_prompt
+from datasets.registry import load_dataset
 from dashboard.config import get_table_schema_prompt
 from dashboard.config import get_dataset, GPT_MODEL, HISTORY_FILE
 
