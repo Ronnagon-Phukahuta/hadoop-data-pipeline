@@ -83,3 +83,4 @@ certs/server.crt
 jobs/reports/
 reports/
 dashboard/history/auth_tokens.json
+datasets/*.yaml
