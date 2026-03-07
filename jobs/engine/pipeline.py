@@ -16,7 +16,7 @@ from typing import Dict, List, Set
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
 
-from data_quality import run_quality_checks
+from quality_rules.finance_rules import FinanceQualityRules
 from utils.hdfs import (
     hdfs_ls_recursive, hdfs_touch, hdfs_write_done,
     is_already_processed, compute_file_checksum, extract_year_from_path,
@@ -119,8 +119,9 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
             dq_report = {}
             try:
                 with step_log(log, "data_quality", dataset=dataset_label, year=year) as ctx:
+                    rules = FinanceQualityRules(ds)
                     dq_passed, dq_report = with_retry(
-                        lambda: run_quality_checks(df, files[0]),
+                        lambda: rules.run_checks(df, files[0]),
                         label=f"data quality year={year}"
                     )
                     ctx["passed"] = dq_passed

@@ -68,6 +68,14 @@ class DatasetConfig:
         return self.pipeline.get("critical_columns", [])
 
     @property
+    def required_columns(self) -> List[str]:
+        return self.pipeline.get("required_columns", [])
+
+    @property
+    def amount_columns(self) -> List[str]:
+        return self.pipeline.get("amount_columns", [])
+
+    @property
     def id_columns(self) -> List[str]:
         return self.pipeline.get("id_columns", ["date", "details", "year"])
 

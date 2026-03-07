@@ -72,6 +72,7 @@ services:
          - PYSPARK_DRIVER_PYTHON=python3
          - SPARK_DRIVER_EXTRA_JAVA_OPTIONS=-Dlog4j.configuration=file:/spark/conf/log4j.properties
          - SPARK_EXECUTOR_EXTRA_JAVA_OPTIONS=-Dlog4j.configuration=file:/spark/conf/log4j.properties
+         - PYTHONPATH=/jobs
       ports:
          - "8080:8080"
          - "7077:7077"

@@ -177,7 +177,7 @@ class TestRunPipelineUsesDatasetConfig:
     @patch("engine.pipeline.sync_schema", side_effect=lambda sp, df, *a, **kw: df)
     @patch("engine.pipeline.create_version", return_value="v_test")
     @patch("engine.pipeline.cleanup_old_versions")
-    @patch("engine.pipeline.run_quality_checks", return_value=(True, {}))
+    @patch("engine.pipeline.FinanceQualityRules")
     @patch("engine.pipeline.with_retry")
     @patch("engine.pipeline.hdfs_ls_recursive")
     @patch("engine.pipeline.is_already_processed", return_value=False)
@@ -185,9 +185,10 @@ class TestRunPipelineUsesDatasetConfig:
     @patch("engine.pipeline.hdfs_write_done")
     def test_atomic_write_uses_registry_table_names(
         self, mock_done, mock_checksum, mock_processed, mock_ls,
-        mock_retry, mock_dq, mock_cleanup, mock_version,
+        mock_retry, mock_rules_cls, mock_cleanup, mock_version,
         mock_sync, mock_atomic, ds, mock_spark, mock_sc_fixture
     ):
+        mock_rules_cls.return_value.run_checks.return_value = (True, "")
         sc, _, _ = mock_sc_fixture
         csv_file = "hdfs:///datalake/raw/test_ds/year=2024/data.csv"
         mock_ls.return_value = [csv_file]
@@ -249,21 +250,23 @@ class TestRunPipelineFailedFiles:
         mock_spark.sql.return_value.collect.return_value = []
 
         from engine.pipeline import run_pipeline
-        with patch("engine.pipeline.run_quality_checks") as mock_dq:
+        with patch("engine.pipeline.FinanceQualityRules") as mock_rules_cls:
+            mock_rules_cls.return_value.run_checks.return_value = (True, "")
             run_pipeline(mock_spark, sc, ds)
             # DQ ไม่ถูกเรียกเพราะ file มี .failed แล้ว
-            mock_dq.assert_not_called()
+            mock_rules_cls.return_value.run_checks.assert_not_called()
 
     @patch("engine.pipeline.send_quality_alert")
     @patch("engine.pipeline.hdfs_touch")
-    @patch("engine.pipeline.run_quality_checks", return_value=(False, {"error": "bad data"}))
+    @patch("engine.pipeline.FinanceQualityRules")
     @patch("engine.pipeline.with_retry")
     @patch("engine.pipeline.hdfs_ls_recursive")
     @patch("engine.pipeline.is_already_processed", return_value=False)
     def test_dq_fail_touches_failed_file(
-        self, mock_processed, mock_ls, mock_retry, mock_dq,
+        self, mock_processed, mock_ls, mock_retry, mock_rules_cls,
         mock_touch, mock_alert, ds, mock_spark, mock_sc_fixture
     ):
+        mock_rules_cls.return_value.run_checks.return_value = (False, "fatal error")
         sc, _, _ = mock_sc_fixture
         csv_file = "hdfs:///raw/year=2024/data.csv"
         mock_ls.return_value = [csv_file]
