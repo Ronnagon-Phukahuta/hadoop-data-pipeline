@@ -4,7 +4,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
 from typing import List, Dict
 
-from data_quality import run_quality_checks
+from jobs.can_remove_data_quality import run_quality_checks
 from utils.hdfs import (
     hdfs_ls_recursive, hdfs_touch, hdfs_write_done,
     is_already_processed, compute_file_checksum, extract_year_from_path,
