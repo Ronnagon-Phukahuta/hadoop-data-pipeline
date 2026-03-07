@@ -67,6 +67,18 @@ class DatasetConfig:
     def critical_columns(self) -> List[str]:
         return self.pipeline.get("critical_columns", [])
 
+    @property
+    def id_columns(self) -> List[str]:
+        return self.pipeline.get("id_columns", ["date", "details", "year"])
+
+    @property
+    def exclude_columns(self) -> List[str]:
+        return self.pipeline.get("exclude_columns", [])
+
+    @property
+    def partition_by(self) -> str:
+        return self.pipeline.get("partition_by", "year")
+
     def col(self, name: str) -> Optional[ColumnDef]:
         """ดึง ColumnDef ตามชื่อ column"""
         return next((c for c in self.schema if c.name == name), None)

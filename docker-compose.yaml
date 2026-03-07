@@ -80,6 +80,7 @@ services:
       volumes:
          - ./hive-site.xml:/spark/conf/hive-site.xml
          - ./jobs:/jobs
+         - ./jobs/datasets:/jobs/datasets  # datasets อยู่ใน jobs/ แล้ว mount ซ้ำเพื่อความชัดเจน
          - ./tests:/jobs/tests
          - ./spark/conf/log4j.properties:/spark/conf/log4j.properties:ro
 
@@ -134,6 +135,7 @@ services:
          - ./data:/data
          - /var/run/docker.sock:/var/run/docker.sock
          - ./jobs:/jobs
+         - ./jobs/datasets:/jobs/datasets  # สำหรับ DAG ที่ import datasets.registry
       ports:
          - "8088:8080"
       command: webserver
@@ -163,6 +165,7 @@ services:
          - ./data:/data
          - /var/run/docker.sock:/var/run/docker.sock
          - ./jobs:/jobs
+         - ./jobs/datasets:/jobs/datasets  # สำหรับ DAG ที่ import datasets.registry
       command: scheduler
 
    airflow-init:
@@ -221,6 +224,7 @@ services:
          - ./data:/data
          - ./dashboard/.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
          - ./jobs/logs:/jobs/logs:ro
+         - ./jobs/datasets:/app/datasets  # mount datasets เข้า /app/datasets ใน container
 
    nginx:
       image: nginx:alpine

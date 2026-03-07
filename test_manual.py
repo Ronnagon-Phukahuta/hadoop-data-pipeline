@@ -1,19 +1,14 @@
+import sys
+sys.argv = ['run_pipeline.py', 'finance_itsc']
+from jobs.engine.run_pipeline import _resolve_dataset_name
+print('from CLI:', _resolve_dataset_name())
+
+sys.argv = ['run_pipeline.py']
+print('default:', _resolve_dataset_name())
+
+
 from datasets.registry import load_dataset
-from dashboard.config import get_table_schema_prompt
-from dashboard.config import get_dataset, GPT_MODEL, HISTORY_FILE
-
-print('Testing dataset loading and prompt building...\n')
 ds = load_dataset('finance_itsc')
-print('dataset:', ds.dataset)
-print('table:', ds.curated_table)
-print('columns:', [c.name for c in ds.schema])
-print('categories:', len(ds.category_mapping))
-
-print('TABLE_SCHEMA PROMPT:')
-print(get_table_schema_prompt())
-
-print('GPT CONFIG:')
-ds = get_dataset()
-print('GPT_MODEL:', GPT_MODEL)
-print('HISTORY_FILE:', HISTORY_FILE)
-print('HIVE_DB:', ds.database)
+print('id_columns:', ds.id_columns)
+print('exclude_columns:', ds.exclude_columns)
+print('partition_by:', ds.partition_by)
