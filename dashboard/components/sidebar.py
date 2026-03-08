@@ -19,6 +19,9 @@ def load_available_years() -> list:
 @st.cache_data(ttl=300)
 def load_quick_stats(year: int):
     """ดึงข้อมูล Quick Stats จาก Hive"""
+    if year is None:
+        return 0, 0
+
     df_budget = execute_query_df(f"""
         SELECT SUM(amount) as total 
         FROM finance_itsc_long 
@@ -40,6 +43,9 @@ def load_quick_stats(year: int):
 @st.cache_data(ttl=300)
 def load_negative_categories(year: int) -> list:
     """ดึงหมวดที่ remaining ติดลบ จาก row สุดท้าย"""
+    if year is None:
+        return []
+
     try:
         df = execute_query_df(f"""
             SELECT category, amount
@@ -109,7 +115,13 @@ def _render_year_selector():
 
 def _render_quick_stats():
     st.header("📊 Quick Stats")
-    year = st.session_state.get("selected_year", 2024)
+
+    # ดึง year หลังจาก _render_year_selector set แล้วเสมอ
+    year = st.session_state.get("selected_year")
+    if year is None:
+        st.caption("รอเลือกปีงบประมาณ...")
+        return
+
     st.caption(f"ปีงบประมาณ {year}")
 
     try:
@@ -132,7 +144,10 @@ def _render_quick_stats():
 
 
 def _render_negative_alert():
-    year = st.session_state.get("selected_year", 2024)
+    year = st.session_state.get("selected_year")
+    if year is None:
+        return
+
     neg_cats = load_negative_categories(year)
 
     if not neg_cats:

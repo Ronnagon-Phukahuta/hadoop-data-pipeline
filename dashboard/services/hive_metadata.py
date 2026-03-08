@@ -119,7 +119,7 @@ def get_column_metadata(dataset_name: str) -> List[ColumnMeta]:
                 notes=_decode(row[10]),
             ))
         return result
-    except Exception as e:
+    except Exception:
         # fallback gracefully — คืน empty list
         return []
 

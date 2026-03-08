@@ -160,9 +160,12 @@ def render_hdfs_browser(namenode_url: str = "http://namenode:50070"):
 
     # ── Sort items ─────────────────────────────────────────────────────────────
     def sort_key(item):
-        if sort_by == "name": return item["pathSuffix"].lower()
-        if sort_by == "size": return item.get("length", 0)
-        if sort_by == "date": return item.get("modificationTime", 0)
+        if sort_by == "name":
+            return item["pathSuffix"].lower()
+        if sort_by == "size": 
+            return item.get("length", 0)
+        if sort_by == "date": 
+            return item.get("modificationTime", 0)
         return item["pathSuffix"].lower()
 
     sorted_items = sorted(items, key=sort_key, reverse=not sort_asc)

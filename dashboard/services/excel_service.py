@@ -137,7 +137,7 @@ def _get_data_mapping_batch(values: list) -> dict:
         return json.loads(result)
     except Exception:
         # ถ้า JSON ไม่สมบูรณ์ ให้ return empty dict แทน crash
-        print(f"   ⚠️ JSON parse failed, skipping batch")
+        print("   ⚠️ JSON parse failed, skipping batch")
         return {}
 
 
