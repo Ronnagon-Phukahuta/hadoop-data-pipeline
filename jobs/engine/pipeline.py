@@ -2,21 +2,17 @@
 # engine/pipeline.py
 """
 Generic ETL Pipeline Engine
-รับ DatasetConfig แทนการ hardcode finance_itsc
-
-Usage:
-    from engine.pipeline import run_pipeline
-    from datasets.registry import load_dataset
-
-    ds = load_dataset("finance_itsc")
-    run_pipeline(spark, sc, ds)
 """
 
+import os
+from datetime import datetime
 from typing import Dict, List, Set
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
+from pyhive import hive as pyhive_hive
 
-from quality_rules.finance_rules import FinanceQualityRules
+from quality_rules.registry import get_rules
 from utils.hdfs import (
     hdfs_ls_recursive, hdfs_touch, hdfs_write_done,
     is_already_processed, compute_file_checksum, extract_year_from_path,
@@ -28,20 +24,108 @@ from utils.schema_evolution import sync_schema
 from logger import setup_logger, step_log
 from datasets.registry import DatasetConfig
 
+DATASETS_DIR = os.path.join(os.path.dirname(__file__), "..", "datasets")
+HIVE_HOST = os.environ.get("HIVE_HOST", "hive-server")
+HIVE_PORT = int(os.environ.get("HIVE_PORT", 10000))
+
+
+# ── Hive Metadata Sync ────────────────────────────────────────────────────────
+
+def _sync_hive_metadata(spark, ds: DatasetConfig, log) -> None:
+    """
+    Sync Hive curated table schema → column_metadata table
+    - column ใหม่ใน curated → INSERT PARTITION (ds=dataset) เข้า column_metadata
+    - column หายไป → log warning เท่านั้น
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        rows = spark.sql(
+            f"DESCRIBE {ds.database}.{ds.curated_table}"
+        ).collect()
+        hive_cols = {
+            row["col_name"]: row["data_type"]
+            for row in rows
+            if row["col_name"]
+            and not row["col_name"].startswith("#")
+            and row["col_name"].strip()
+        }
+    except Exception as e:
+        log.warning(
+            f"[dataset={ds.dataset}] [step=sync_hive_metadata] DESCRIBE failed: {e}"
+        )
+        return
+
+    try:
+        with pyhive_hive.connect(
+            host=HIVE_HOST, port=HIVE_PORT, database="default"
+        ) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SET hive.exec.dynamic.partition.mode=nonstrict")
+
+            # อ่าน existing cols จาก partition ds=dataset
+            cursor.execute(
+                f"SELECT col_name FROM column_metadata WHERE ds = '{ds.dataset}'"
+            )
+            existing_cols = {row[0] for row in cursor.fetchall()}
+
+            id_cols    = set(ds.id_columns)
+            amount_cols = set(ds.amount_columns)
+            date_col   = ds.date_column
+            partition_col = ds.partition_by
+
+            new_cols = [
+                (c, dtype) for c, dtype in hive_cols.items()
+                if c not in existing_cols and c != partition_col
+            ]
+            removed_cols = [
+                c for c in existing_cols
+                if c not in hive_cols and c != partition_col
+            ]
+
+            if not new_cols and not removed_cols:
+                log.info(
+                    f"[dataset={ds.dataset}] [step=sync_hive_metadata] "
+                    "schema ตรงกัน ไม่มีการเปลี่ยนแปลง"
+                )
+                return
+
+            for col_name, dtype in new_cols:
+                cursor.execute(
+                    "INSERT INTO column_metadata PARTITION (ds='%s') VALUES "
+                    "('%s','%s','%s','(auto-synced from Hive)',%s,%s,%s,TRUE,FALSE,'[]','','%s')"
+                    % (
+                        ds.dataset,
+                        col_name, dtype.upper(), col_name,
+                        str(col_name in amount_cols).upper(),
+                        str(col_name in id_cols).upper(),
+                        str(col_name == date_col).upper(),
+                        now,
+                    )
+                )
+                log.info(
+                    f"[dataset={ds.dataset}] [step=sync_hive_metadata] "
+                    f"เพิ่ม column '{col_name}' ({dtype.upper()})"
+                )
+
+            for col_name in removed_cols:
+                log.warning(
+                    f"[dataset={ds.dataset}] [step=sync_hive_metadata] "
+                    f"column '{col_name}' อยู่ใน metadata แต่ไม่มีใน Hive"
+                )
+
+    except Exception as e:
+        log.warning(
+            f"[dataset={ds.dataset}] [step=sync_hive_metadata] failed: {e}"
+        )
+
+
+# ── Main Pipeline ─────────────────────────────────────────────────────────────
 
 def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
-    """
-    รัน ETL pipeline ทั้งหมดสำหรับ dataset ที่กำหนด
-
-    Args:
-        spark: SparkSession
-        sc:    SparkContext
-        ds:    DatasetConfig จาก registry
-    """
     log = setup_logger(f"etl.{ds.dataset}")
     dataset_label = ds.dataset
 
-    # ── Paths & Tables จาก registry ─────────────────────────
     raw_path     = f"hdfs://namenode:8020{ds.paths['raw']}"
     staging_path = f"hdfs://namenode:8020{ds.paths['staging']}"
     curated_path = f"hdfs://namenode:8020{ds.paths['curated']}"
@@ -50,11 +134,17 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
     database     = ds.database
     id_cols      = ds.id_columns
     exclude_cols = ds.exclude_columns
+    date_col     = ds.date_column
 
     log.info(f"[dataset={dataset_label}] [step=pipeline] START")
+    if not ds.has_date:
+        log.info(
+            f"[dataset={dataset_label}] [step=pipeline] "
+            "date_column=None — ข้าม date-dependent transforms"
+        )
 
     # ============================================================
-    # PART 1: Raw -> Staging (Wide) — Incremental
+    # PART 1: Raw -> Staging (Wide)
     # ============================================================
     pending_by_year: Dict[int, List[str]] = {}
 
@@ -82,15 +172,16 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
             if year:
                 pending_by_year.setdefault(year, []).append(f)
             else:
-                log.warning(f"[dataset={dataset_label}] [step=scan_hdfs] Cannot extract year",
-                            file=f)
+                log.warning(
+                    f"[dataset={dataset_label}] [step=scan_hdfs] Cannot extract year",
+                    file=f,
+                )
 
         spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
         failed_years: Set[int] = set()
 
         for year, files in sorted(pending_by_year.items()):
 
-            # ── Read CSV ─────────────────────────────────────
             try:
                 with step_log(log, "read_csv", dataset=dataset_label,
                               year=year, files=len(files)) as ctx:
@@ -110,24 +201,27 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
                     df = with_retry(_read_csv, label=f"read CSV year={year}")
                     ctx["columns"] = len(df.columns)
             except Exception as e:
-                log.error(f"[dataset={dataset_label}] [step=read_csv] FAILED — skipping year",
-                          year=year, error=str(e))
+                log.error(
+                    f"[dataset={dataset_label}] [step=read_csv] FAILED — skipping year",
+                    year=year, error=str(e),
+                )
                 failed_years.add(year)
                 continue
 
-            # ── Data Quality ──────────────────────────────────
             dq_report = {}
             try:
                 with step_log(log, "data_quality", dataset=dataset_label, year=year) as ctx:
-                    rules = FinanceQualityRules(ds)
+                    rules = get_rules(ds)
                     dq_passed, dq_report = with_retry(
                         lambda: rules.run_checks(df, files[0]),
-                        label=f"data quality year={year}"
+                        label=f"data quality year={year}",
                     )
                     ctx["passed"] = dq_passed
             except Exception as e:
-                log.error(f"[dataset={dataset_label}] [step=data_quality] FAILED — skipping year",
-                          year=year, error=str(e))
+                log.error(
+                    f"[dataset={dataset_label}] [step=data_quality] FAILED — skipping year",
+                    year=year, error=str(e),
+                )
                 for f in files:
                     hdfs_touch(sc, f + ".failed")
                 send_quality_alert(files[0], dq_report)
@@ -135,15 +229,16 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
                 continue
 
             if not dq_passed:
-                log.error(f"[dataset={dataset_label}] [step=data_quality] DQ failed — skipping load",
-                          year=year)
+                log.error(
+                    f"[dataset={dataset_label}] [step=data_quality] DQ failed",
+                    year=year,
+                )
                 for f in files:
                     hdfs_touch(sc, f + ".failed")
                 send_quality_alert(files[0], dq_report)
                 failed_years.add(year)
                 continue
 
-            # ── Atomic Write ──────────────────────────────────
             try:
                 with step_log(log, "atomic_write", dataset=dataset_label, year=year) as ctx:
                     df = sync_schema(spark, df, wide_table, database, skip_cols=["year"])
@@ -161,11 +256,11 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
                     for f in files:
                         checksum = with_retry(
                             compute_file_checksum, sc, f,
-                            label=f"checksum {f.split('/')[-1]}"
+                            label=f"checksum {f.split('/')[-1]}",
                         )
                         with_retry(
                             hdfs_write_done, sc, f, checksum,
-                            label=f"write .done {f.split('/')[-1]}"
+                            label=f"write .done {f.split('/')[-1]}",
                         )
 
                 with step_log(log, "versioning", dataset=dataset_label, year=year) as ctx:
@@ -174,8 +269,10 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
                     ctx["version"] = version_id
 
             except Exception as e:
-                log.error(f"[dataset={dataset_label}] [step=atomic_write] FAILED — skipping year",
-                          year=year, error=str(e))
+                log.error(
+                    f"[dataset={dataset_label}] [step=atomic_write] FAILED",
+                    year=year, error=str(e),
+                )
                 failed_years.add(year)
                 continue
 
@@ -200,21 +297,28 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
                 ).collect()
                 if "year=" in row[0]
             )
-            curated_years = set(
-                int(row[0].split("=")[1])
-                for row in spark.sql(
-                    f"SHOW PARTITIONS {database}.{long_table}"
-                ).collect()
-                if "year=" in row[0]
-            )
-            incomplete_years = staging_years - curated_years
-            if incomplete_years:
-                years_to_update |= incomplete_years
+            # ถ้า long table ไม่มี → ถือว่าทุก staging year ยังไม่ได้ process
+            try:
+                curated_years = set(
+                    int(row[0].split("=")[1])
+                    for row in spark.sql(
+                        f"SHOW PARTITIONS {database}.{long_table}"
+                    ).collect()
+                    if "year=" in row[0]
+                )
+            except Exception:
+                curated_years = set()
+
+            incomplete = staging_years - curated_years
+            if incomplete:
+                years_to_update |= incomplete
             ctx["staging_years"]    = sorted(staging_years)
-            ctx["incomplete_years"] = sorted(incomplete_years)
+            ctx["incomplete_years"] = sorted(incomplete)
     except Exception as e:
-        log.warning(f"[dataset={dataset_label}] [step=check_partitions] Cannot check partitions",
-                    error=str(e))
+        log.warning(
+            f"[dataset={dataset_label}] [step=check_partitions] Cannot check",
+            error=str(e),
+        )
 
     years_to_update = sorted(years_to_update)
 
@@ -222,51 +326,61 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
         log.info(f"[dataset={dataset_label}] [step=pipeline] No new data — skipping Part 2")
     else:
         spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        curated_written = False
 
         for year in years_to_update:
 
-            # ── Read Wide ─────────────────────────────────────
             try:
                 with step_log(log, "read_wide", dataset=dataset_label, year=year) as ctx:
-                    def _read_wide(_year=year):
+                    _date_col = date_col
+
+                    def _read_wide(_year=year, _dc=_date_col):
                         df = (spark.read
                               .option("mergeSchema", "true")
                               .parquet(f"{staging_path}/year={_year}"))
-                        return df.filter(
-                            col("date").rlike(r"^\d{4}-\d{2}$")
-                            | (col("date") == "all-year-budget")
-                        )
+                        if _dc and _dc in df.columns:
+                            df = df.filter(
+                                col(_dc).rlike(r"^\d{4}-\d{2}")  # 2024-01 หรือ 2024-01-xx
+                                | (col(_dc) == "all-year-budget")
+                            )
+                        return df
+
                     df_wide = with_retry(_read_wide, label=f"read wide year={year}")
                     ctx["columns"] = len(df_wide.columns)
             except Exception as e:
-                log.error(f"[dataset={dataset_label}] [step=read_wide] FAILED — skipping year",
-                          year=year, error=str(e))
+                log.error(
+                    f"[dataset={dataset_label}] [step=read_wide] FAILED — skipping year",
+                    year=year, error=str(e),
+                )
                 continue
 
-            # ── Transform Wide -> Long ────────────────────────
             try:
                 with step_log(log, "transform", dataset=dataset_label, year=year) as ctx:
                     def _transform(_df=df_wide, _id=id_cols, _ex=exclude_cols):
-                        amount_cols = [c for c in _df.columns if c not in _id + _ex]
+                        amount_cols_t = [c for c in _df.columns if c not in _id + _ex]
+                        if not amount_cols_t:
+                            raise ValueError("ไม่มี amount columns ให้ transform")
                         df_casted = _df.select(
-                            *_id,
-                            *[col(c).cast("double").alias(c) for c in amount_cols]
+                            *[c for c in _id if c in _df.columns],
+                            *[col(c).cast("double").alias(c) for c in amount_cols_t],
                         )
-                        stack_expr = ", ".join([f"'{c}', `{c}`" for c in amount_cols])
-                        id_exprs   = [f"`{c}`" for c in _id]
+                        id_in_df = [c for c in _id if c in _df.columns]
+                        stack_expr = ", ".join([f"'{c}', `{c}`" for c in amount_cols_t])
+                        id_exprs   = [f"`{c}`" for c in id_in_df]
                         return df_casted.selectExpr(
                             *id_exprs,
-                            f"stack({len(amount_cols)}, {stack_expr}) as (category, amount)"
+                            f"stack({len(amount_cols_t)}, {stack_expr}) as (category, amount)",
                         ).filter("amount is not null")
 
                     df_long = with_retry(_transform, label=f"transform wide->long year={year}")
                     ctx["rows"] = df_long.count()
             except Exception as e:
-                log.error(f"[dataset={dataset_label}] [step=transform] FAILED — skipping year",
-                          year=year, error=str(e))
+                log.error(
+                    f"[dataset={dataset_label}] [step=transform] FAILED — skipping year",
+                    year=year, error=str(e),
+                )
                 continue
 
-            # ── Write Curated ─────────────────────────────────
             try:
                 with step_log(log, "write_curated", dataset=dataset_label, year=year) as ctx:
                     atomic_write_table(
@@ -278,8 +392,15 @@ def run_pipeline(spark: SparkSession, sc, ds: DatasetConfig) -> None:
                         partition_value=year,
                     )
                     ctx["rows"] = df_long.count()
+                    curated_written = True
             except Exception as e:
-                log.error(f"[dataset={dataset_label}] [step=write_curated] FAILED",
-                          year=year, error=str(e))
+                log.error(
+                    f"[dataset={dataset_label}] [step=write_curated] FAILED",
+                    year=year, error=str(e),
+                )
+
+        if curated_written:
+            with step_log(log, "sync_hive_metadata", dataset=dataset_label):
+                _sync_hive_metadata(spark, ds, log)
 
     log.info(f"[dataset={dataset_label}] [step=pipeline] ETL completed")

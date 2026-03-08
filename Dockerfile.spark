@@ -4,4 +4,5 @@ ENV PATH="/spark/bin:${PATH}"
 
 RUN pip3 install loguru \
     PyYAML \
-    python-dotenv 
+    python-dotenv \
+    pyhive thrift thrift-sasl \

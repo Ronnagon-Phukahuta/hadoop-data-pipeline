@@ -39,7 +39,6 @@ services:
          - hive-metastore
       ports:
          - "10000:10000"
-   
    hive-metastore:
       image: bde2020/hive:2.3.2-postgresql-metastore
       container_name: hive-metastore
@@ -81,10 +80,8 @@ services:
       volumes:
          - ./hive-site.xml:/spark/conf/hive-site.xml
          - ./jobs:/jobs
-         - ./jobs/datasets:/jobs/datasets  # datasets อยู่ใน jobs/ แล้ว mount ซ้ำเพื่อความชัดเจน
          - ./tests:/jobs/tests
          - ./spark/conf/log4j.properties:/spark/conf/log4j.properties:ro
-
    spark-worker:
       image: bde2020/spark-worker:2.4.5-hadoop2.7
       container_name: spark-worker
@@ -100,7 +97,6 @@ services:
       volumes:
          - ./hive-site.xml:/spark/conf/hive-site.xml
          - ./spark/conf/log4j.properties:/spark/conf/log4j.properties:ro
-
    airflow-postgres:
       image: postgres:13
       container_name: airflow-postgres
@@ -110,7 +106,6 @@ services:
          POSTGRES_DB: airflow
       volumes:
          - ./airflow/postgres:/var/lib/postgresql/data
-
    airflow-webserver:
       build:
          context: ./airflow
@@ -123,7 +118,6 @@ services:
          - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
          - AIRFLOW__CORE__LOAD_EXAMPLES=False
          - AIRFLOW__WEBSERVER__SECRET_KEY=dc42cf13f85423e84083e527f2be293a75fd0a170d78ff83e976933365cdd896
-         # SMTP for email alerts
          - AIRFLOW__SMTP__SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
          - AIRFLOW__SMTP__SMTP_PORT=${SMTP_PORT:-587}
          - AIRFLOW__SMTP__SMTP_STARTTLS=True
@@ -136,11 +130,9 @@ services:
          - ./data:/data
          - /var/run/docker.sock:/var/run/docker.sock
          - ./jobs:/jobs
-         - ./jobs/datasets:/jobs/datasets  # สำหรับ DAG ที่ import datasets.registry
       ports:
          - "8088:8080"
       command: webserver
-
    airflow-scheduler:
       build:
          context: ./airflow
@@ -153,7 +145,6 @@ services:
          - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
          - AIRFLOW__CORE__LOAD_EXAMPLES=False
          - AIRFLOW__WEBSERVER__SECRET_KEY=dc42cf13f85423e84083e527f2be293a75fd0a170d78ff83e976933365cdd896
-         # SMTP for email alerts
          - AIRFLOW__SMTP__SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
          - AIRFLOW__SMTP__SMTP_PORT=${SMTP_PORT:-587}
          - AIRFLOW__SMTP__SMTP_STARTTLS=True
@@ -166,9 +157,7 @@ services:
          - ./data:/data
          - /var/run/docker.sock:/var/run/docker.sock
          - ./jobs:/jobs
-         - ./jobs/datasets:/jobs/datasets  # สำหรับ DAG ที่ import datasets.registry
       command: scheduler
-
    airflow-init:
       container_name: airflow-init
       image: apache/airflow:2.9.1
@@ -203,7 +192,6 @@ services:
          - hive-metastore
       volumes:
          - ./hive-site.xml:/opt/spark/conf/hive-site.xml
-
    streamlit-dashboard:
       build:
          context: .
@@ -215,6 +203,8 @@ services:
          - HIVE_PORT=10000
          - COOKIE_SECRET=${COOKIE_SECRET}
          - WEBHDFS_URL=http://namenode:50070
+         - DATASETS_DIR=/jobs/datasets
+         - PYTHONPATH=/jobs
       ports:
          - "8501:8501"
       depends_on:
@@ -225,8 +215,7 @@ services:
          - ./data:/data
          - ./dashboard/.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
          - ./jobs/logs:/jobs/logs:ro
-         - ./jobs/datasets:/app/datasets  # mount datasets เข้า /app/datasets ใน container
-
+         - ./jobs:/jobs
    nginx:
       image: nginx:alpine
       container_name: nginx

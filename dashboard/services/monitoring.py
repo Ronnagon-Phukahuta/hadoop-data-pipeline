@@ -187,7 +187,7 @@ def get_dq_stats() -> Dict[str, Any]:
 
 
 WEBHDFS_URL = os.environ.get("WEBHDFS_URL", "http://namenode:50070")
-VERSIONS_PATH = "/datalake/versions/finance_itsc"
+VERSIONS_BASE = "/datalake/versions"
 
 
 def _webhdfs_ls(path: str) -> List[Dict]:
@@ -215,39 +215,54 @@ def _webhdfs_read(path: str) -> str:
 
 
 @st.cache_data(ttl=60)
-def get_version_history() -> List[Dict]:
-    """ดึง version snapshot จาก HDFS — cache 60 วินาที"""
+def get_version_history(dataset_name: str = None) -> List[Dict]:
+    """
+    ดึง version snapshot จาก HDFS — cache 60 วินาที
+    - dataset_name=None → scan ทุก dataset ใน /datalake/versions/
+    - dataset_name="finance_itsc" → scan เฉพาะ dataset นั้น
+    """
     versions = []
 
-    year_dirs = _webhdfs_ls(VERSIONS_PATH)
-    for year_dir in year_dirs:
-        if year_dir["type"] != "DIRECTORY":
-            continue
-        year_path = f"{VERSIONS_PATH}/{year_dir['pathSuffix']}"
-        year = year_dir["pathSuffix"].replace("year=", "")
+    # รายชื่อ dataset ที่จะ scan
+    if dataset_name:
+        dataset_dirs = [{"pathSuffix": dataset_name, "type": "DIRECTORY"}]
+    else:
+        dataset_dirs = [d for d in _webhdfs_ls(VERSIONS_BASE) if d["type"] == "DIRECTORY"]
 
-        version_dirs = _webhdfs_ls(year_path)
-        for v_dir in version_dirs:
-            if v_dir["type"] != "DIRECTORY" or not v_dir["pathSuffix"].startswith("v_"):
+    for ds_dir in dataset_dirs:
+        ds_name = ds_dir["pathSuffix"]
+        versions_path = f"{VERSIONS_BASE}/{ds_name}"
+
+        year_dirs = _webhdfs_ls(versions_path)
+        for year_dir in year_dirs:
+            if year_dir["type"] != "DIRECTORY":
                 continue
-            version_id = v_dir["pathSuffix"]
-            meta_path = f"{year_path}/{version_id}/_version.json"
+            year_path = f"{versions_path}/{year_dir['pathSuffix']}"
+            year = year_dir["pathSuffix"].replace("year=", "")
 
-            meta_text = _webhdfs_read(meta_path)
-            if meta_text:
-                try:
-                    meta = json.loads(meta_text)
-                    raw_checksum = meta.get("checksum", "")
-                    checksum = raw_checksum.split(":")[-1][:12] if ":" in raw_checksum else raw_checksum[:12]
-                    versions.append({
-                        "version": meta.get("version", version_id),
-                        "year": meta.get("year", year),
-                        "rows": meta.get("row_count", 0),
-                        "checksum": checksum,
-                        "timestamp": meta.get("timestamp", ""),
-                        "path": f"hdfs://namenode:8020{year_path}/{version_id}",
-                    })
-                except Exception:
-                    pass
+            version_dirs = _webhdfs_ls(year_path)
+            for v_dir in version_dirs:
+                if v_dir["type"] != "DIRECTORY" or not v_dir["pathSuffix"].startswith("v_"):
+                    continue
+                version_id = v_dir["pathSuffix"]
+                meta_path = f"{year_path}/{version_id}/_version.json"
+
+                meta_text = _webhdfs_read(meta_path)
+                if meta_text:
+                    try:
+                        meta = json.loads(meta_text)
+                        raw_checksum = meta.get("checksum", "")
+                        checksum = raw_checksum.split(":")[-1][:12] if ":" in raw_checksum else raw_checksum[:12]
+                        versions.append({
+                            "dataset": ds_name,
+                            "version": meta.get("version", version_id),
+                            "year": meta.get("year", year),
+                            "rows": meta.get("row_count", 0),
+                            "checksum": checksum,
+                            "timestamp": meta.get("timestamp", ""),
+                            "path": f"hdfs://namenode:8020{year_path}/{version_id}",
+                        })
+                    except Exception:
+                        pass
 
     return sorted(versions, key=lambda x: x["timestamp"], reverse=True)

@@ -10,8 +10,24 @@ import plotly.graph_objects as go
 from auth import require_auth
 from services.monitoring import (
     get_pipeline_runs, get_dq_stats, get_version_history,
-    PIPELINE_STEPS, STEP_LABELS,
+    PIPELINE_STEPS, STEP_LABELS, VERSIONS_BASE,
 )
+import requests
+import os
+
+WEBHDFS_URL = os.environ.get("WEBHDFS_URL", "http://namenode:50070")
+
+def _list_datasets() -> list[str]:
+    """list dataset names จาก /datalake/versions/"""
+    try:
+        url = f"{WEBHDFS_URL}/webhdfs/v1{VERSIONS_BASE}?op=LISTSTATUS"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            items = r.json().get("FileStatuses", {}).get("FileStatus", [])
+            return sorted([i["pathSuffix"] for i in items if i["type"] == "DIRECTORY"])
+    except Exception:
+        pass
+    return []
 
 st.set_page_config(
     page_title="Monitoring — Finance ITSC",
@@ -178,7 +194,21 @@ else:
 st.divider()
 st.header("📦 Version History")
 
-versions = get_version_history()
+# Dataset selector
+available_datasets = _list_datasets()
+if available_datasets:
+    col_ds, _ = st.columns([2, 4])
+    with col_ds:
+        selected_dataset = st.selectbox(
+            "Dataset",
+            ["(ทั้งหมด)"] + available_datasets,
+            key="version_dataset_select",
+        )
+    ds_filter = None if selected_dataset == "(ทั้งหมด)" else selected_dataset
+else:
+    ds_filter = None
+
+versions = get_version_history(dataset_name=ds_filter)
 
 if not versions:
     st.info("ยังไม่มี version snapshot")
@@ -188,6 +218,7 @@ else:
     rows = []
     for v in versions:
         rows.append({
+            "Dataset": v.get("dataset", "—"),
             "Version": v["version"],
             "ปี": v["year"],
             "Rows": v["rows"],
@@ -200,12 +231,12 @@ else:
     if len(versions) > 1:
         df_v = pd.DataFrame(rows)
         df_v["ปี"] = df_v["ปี"].astype(str)
-        df_v["เวลา (สั้น)"] = df_v["เวลา"].str[5:16]  # "03-07 05:32"
+        df_v["เวลา (สั้น)"] = df_v["เวลา"].str[5:16]
         fig3 = px.bar(
             df_v,
             x="เวลา (สั้น)",
             y="Rows",
-            color="ปี",
+            color="Dataset" if ds_filter is None else "ปี",
             hover_data={"Version": True, "เวลา (สั้น)": False},
             title="Rows per Snapshot",
             height=300,

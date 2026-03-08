@@ -75,7 +75,7 @@ def _get_year_context() -> str:
 
 def _get_category_mapping_text() -> str:
     """ดึง category mapping text จาก registry สำหรับ summarize prompt"""
-    from datasets.registry import build_category_mapping_text
+    from jobs.datasets.registry import build_category_mapping_text
     return build_category_mapping_text(get_dataset())
 
 
