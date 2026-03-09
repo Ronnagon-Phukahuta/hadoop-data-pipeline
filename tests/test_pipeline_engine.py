@@ -358,29 +358,34 @@ class TestSyncYamlSchema:
         f.close()
         return f.name
 
+    def _make_pyhive_mock(self, existing_col_names):
+        """สร้าง mock pyhive connection + cursor สำหรับ TestSyncYamlSchema"""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [(c,) for c in existing_col_names]
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        return mock_conn, mock_cursor
+
     def test_no_change_when_schema_matches(self, ds):
-        """ถ้า Hive ตรงกับ yaml — ไม่บันทึกไฟล์"""
+        """ถ้า Hive ตรงกับ column_metadata — ไม่มี INSERT, ไม่ log warning"""
         hive_cols = {"date": "string", "details": "string", "category": "string", "amount": "double"}
         spark = MagicMock()
         spark.sql.return_value.collect.return_value = self._make_hive_rows(hive_cols)
 
-        tmp = self._write_tmp_yaml(self._make_yaml_data())
-        try:
-            with patch("engine.pipeline.os.path.exists", return_value=True):
-                with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_hive_metadata
-                    log = make_mock_log()
-                    _sync_hive_metadata(spark, ds, log)
+        mock_conn, mock_cursor = self._make_pyhive_mock(["date", "details", "category", "amount"])
+        log = make_mock_log()
+        with patch("engine.pipeline.pyhive_hive.connect", return_value=mock_conn):
+            from engine.pipeline import _sync_hive_metadata
+            _sync_hive_metadata(spark, ds, log)
 
-            with open(tmp, "r", encoding="utf-8") as f:
-                result = yaml.safe_load(f)
-            assert len(result["schema"]) == 4
-            assert not log.warning.called
-        finally:
-            os.unlink(tmp)
+        insert_calls = [c for c in mock_cursor.execute.call_args_list if "INSERT" in str(c)]
+        assert len(insert_calls) == 0
+        assert not log.warning.called
 
     def test_new_hive_column_added_to_yaml(self, ds):
-        """column ใหม่ใน Hive → เพิ่มใน yaml schema"""
+        """column ใหม่ใน Hive → INSERT เข้า column_metadata"""
         hive_cols = {
             "date": "string", "details": "string",
             "category": "string", "amount": "double",
@@ -389,21 +394,16 @@ class TestSyncYamlSchema:
         spark = MagicMock()
         spark.sql.return_value.collect.return_value = self._make_hive_rows(hive_cols)
 
-        tmp = self._write_tmp_yaml(self._make_yaml_data())
-        try:
-            with patch("engine.pipeline.os.path.exists", return_value=True):
-                with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_hive_metadata
-                    _sync_hive_metadata(spark, ds, make_mock_log())
+        mock_conn, mock_cursor = self._make_pyhive_mock(["date", "details", "category", "amount"])
+        with patch("engine.pipeline.pyhive_hive.connect", return_value=mock_conn):
+            from engine.pipeline import _sync_hive_metadata
+            _sync_hive_metadata(spark, ds, make_mock_log())
 
-            with open(tmp, "r", encoding="utf-8") as f:
-                result = yaml.safe_load(f)
-            assert "new_budget" in [e["name"] for e in result["schema"]]
-        finally:
-            os.unlink(tmp)
+        insert_calls = [str(c) for c in mock_cursor.execute.call_args_list if "INSERT" in str(c)]
+        assert any("new_budget" in c for c in insert_calls)
 
     def test_new_column_type_mapped_correctly(self, ds):
-        """Hive boolean → yaml BOOLEAN"""
+        """Hive boolean type → INSERT ใช้ uppercased BOOLEAN"""
         hive_cols = {
             "date": "string", "details": "string",
             "category": "string", "amount": "double",
@@ -412,19 +412,15 @@ class TestSyncYamlSchema:
         spark = MagicMock()
         spark.sql.return_value.collect.return_value = self._make_hive_rows(hive_cols)
 
-        tmp = self._write_tmp_yaml(self._make_yaml_data())
-        try:
-            with patch("engine.pipeline.os.path.exists", return_value=True):
-                with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_hive_metadata
-                    _sync_hive_metadata(spark, ds, make_mock_log())
+        mock_conn, mock_cursor = self._make_pyhive_mock(["date", "details", "category", "amount"])
+        with patch("engine.pipeline.pyhive_hive.connect", return_value=mock_conn):
+            from engine.pipeline import _sync_hive_metadata
+            _sync_hive_metadata(spark, ds, make_mock_log())
 
-            with open(tmp, "r", encoding="utf-8") as f:
-                result = yaml.safe_load(f)
-            entry = next(e for e in result["schema"] if e["name"] == "flag_col")
-            assert entry["type"] == "BOOLEAN"
-        finally:
-            os.unlink(tmp)
+        insert_calls = [str(c) for c in mock_cursor.execute.call_args_list
+                        if "INSERT" in str(c) and "flag_col" in str(c)]
+        assert len(insert_calls) >= 1
+        assert "BOOLEAN" in insert_calls[0]
 
     def test_partition_col_not_added_to_schema(self, ds):
         """partition column (year) ต้องไม่ถูกเพิ่มใน schema"""
@@ -532,10 +528,11 @@ class TestSyncYamlSchema:
             with patch("engine.pipeline.with_retry",
                        side_effect=lambda fn, *a, **kw: fn() if callable(fn) else fn):
                 with patch("engine.pipeline.atomic_write_table"):
-                    with patch("engine.pipeline._sync_hive_metadata") as mock_sync:
-                        from engine.pipeline import run_pipeline
-                        run_pipeline(mock_spark, sc, ds)
-                        mock_sync.assert_called_once()
+                    with patch("engine.pipeline.col", side_effect=lambda c: MagicMock()):
+                        with patch("engine.pipeline._sync_hive_metadata") as mock_sync:
+                            from engine.pipeline import run_pipeline
+                            run_pipeline(mock_spark, sc, ds)
+                            mock_sync.assert_called_once()
 
 
 # ── run_pipeline.py: _resolve_dataset_name ───────────────────

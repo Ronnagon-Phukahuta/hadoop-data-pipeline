@@ -176,6 +176,14 @@ class TestCSVCasting:
 
 class TestWideToLong:
 
+    @pytest.fixture(autouse=True)
+    def require_python_workers(self, spark):
+        """Skip if Spark Python worker serialization is unavailable (local Windows mode)."""
+        try:
+            spark.createDataFrame([(1,)], ["x"]).count()
+        except Exception:
+            pytest.skip("Python workers unavailable in local mode — run via ./run_tests.sh in Docker")
+
     def test_basic_row_count(self, spark, wide_schema):
         """3 valid rows × 3 amount columns = 9 rows (minus nulls)"""
         data = [
@@ -293,6 +301,14 @@ class TestStringToDoubleCast:
     แต่ parquet จริงเก็บเป็น double — pipeline ต้อง cast ได้
     """
 
+    @pytest.fixture(autouse=True)
+    def require_python_workers(self, spark):
+        """Skip if Spark Python worker serialization is unavailable (local Windows mode)."""
+        try:
+            spark.createDataFrame([(1,)], ["x"]).count()
+        except Exception:
+            pytest.skip("Python workers unavailable in local mode — run via ./run_tests.sh in Docker")
+
     def test_string_numeric_column_cast_to_double(self, spark):
         """column ที่ Hive เห็นเป็น string แต่ค่าเป็นตัวเลข ต้อง cast ได้"""
         schema = StructType([
@@ -404,8 +420,11 @@ class TestPart2Recovery:
         """_read_wide ต้องอ่านจาก parquet ตรงๆ (mergeSchema=true) ไม่ใช่ spark.sql"""
         import os
         import platform
-        if platform.system() == "Windows" and not os.environ.get("HADOOP_HOME"):
-            pytest.skip("ต้องตั้ง HADOOP_HOME บน Windows ก่อนถึงจะ write parquet ได้")
+        if platform.system() == "Windows":
+            hadoop_home = os.environ.get("HADOOP_HOME", "")
+            winutils = os.path.join(hadoop_home, "bin", "winutils.exe") if hadoop_home else ""
+            if not hadoop_home or not os.path.exists(winutils):
+                pytest.skip("ต้องตั้ง HADOOP_HOME และมี winutils.exe บน Windows ก่อนถึงจะ write parquet ได้")
 
         schema = StructType([
             StructField("date",   StringType(), True),

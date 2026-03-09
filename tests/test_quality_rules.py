@@ -44,13 +44,27 @@ def _make_col_mock(name=None):
 _mock_col = MagicMock(side_effect=lambda name: _make_col_mock(name))
 _mock_spark_abs = MagicMock(side_effect=lambda x: _make_col_mock())
 
-_psf.col = _mock_col
-_psf.abs = _mock_spark_abs
 
-# patch col และ spark_abs ที่ finance_rules module โดยตรง
-# เพราะ `from pyspark.sql.functions import col` bind แล้วตอน import
-_fr.col = _mock_col
-_fr.spark_abs = _mock_spark_abs
+@pytest.fixture(scope="module", autouse=True)
+def patch_pyspark_functions():
+    """Patch pyspark functions for this module only — restore after module completes
+    to avoid polluting test_pipeline_spark.py and other Spark tests."""
+    original_psf_col = _psf.col
+    original_psf_abs = _psf.abs
+    original_fr_col = _fr.col
+    original_fr_abs = _fr.spark_abs
+
+    _psf.col = _mock_col
+    _psf.abs = _mock_spark_abs
+    _fr.col = _mock_col
+    _fr.spark_abs = _mock_spark_abs
+
+    yield
+
+    _psf.col = original_psf_col
+    _psf.abs = original_psf_abs
+    _fr.col = original_fr_col
+    _fr.spark_abs = original_fr_abs
 
 
 # ── Helpers ───────────────────────────────────────────────────
@@ -73,6 +87,7 @@ def make_ds(**overrides) -> DatasetConfig:
             "partition_by": "year",
             "id_columns": ["date", "details", "year"],
             "exclude_columns": ["total_amount"],
+            "date_column": "date",
             "amount_columns": ["expense_budget", "utilities", "compensation_budget"],
         },
         schema=[],
@@ -282,7 +297,12 @@ class TestFinanceCheckDateFormat:
 
     def _mock_df_with_dates(self, dates: List[str]) -> MagicMock:
         df = make_df(FULL_COLUMNS)
-        rows = [MagicMock(date=d) for d in dates]
+        rows = []
+        for d in dates:
+            r = MagicMock()
+            # check_date_format accesses r[0] (index), not r.date (attribute)
+            r.__getitem__ = MagicMock(side_effect=lambda i, _d=d: _d)
+            rows.append(r)
         df.select.return_value.distinct.return_value.collect.return_value = rows
         return df
 
