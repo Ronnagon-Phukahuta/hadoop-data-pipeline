@@ -37,19 +37,24 @@ def _conn():
 
 # ── Dataclasses ──────────────────────────────────────────────
 
-@dataclass
 class ColumnDef:
-    name: str
-    col_type: str
-    thai_name: str = ""
-    description: str = ""
-    is_amount: bool = False
-    is_id: bool = False
-    is_date: bool = False
-    nullable: bool = True
-    reserved_keyword: bool = False
-    allowed_values: List[str] = field(default_factory=list)
-    notes: str = ""
+    """
+    Column definition — รับทั้ง col_type= และ type= (backward compat กับ tests)
+    และรับ partition= kwarg
+    """
+    def __init__(self, name, col_type=None, type=None, **kwargs):
+        self.name = name
+        self.col_type = col_type or type or "STRING"
+        self.thai_name = kwargs.get("thai_name", "")
+        self.description = kwargs.get("description", "")
+        self.is_amount = kwargs.get("is_amount", False)
+        self.is_id = kwargs.get("is_id", False)
+        self.is_date = kwargs.get("is_date", False)
+        self.nullable = kwargs.get("nullable", True)
+        self.reserved_keyword = kwargs.get("reserved_keyword", False)
+        self.allowed_values = kwargs.get("allowed_values", [])
+        self.notes = kwargs.get("notes", "")
+        self.partition = kwargs.get("partition", False)
 
     # backward-compat: pipeline.py ใช้ col.type
     @property
@@ -262,6 +267,9 @@ def load_dataset(name: str, datasets_dir: Path = DATASETS_DIR) -> DatasetConfig:
                 reserved_keyword=col.get("reserved_keyword", False),
                 allowed_values=col.get("allowed_values", []),
                 notes=col.get("notes", "") or "",
+                partition=col.get("partition", False),
+                is_date=col.get("is_date", False),
+                is_amount=col.get("is_amount", False),
             )
             for col in raw.get("schema", [])
         ]

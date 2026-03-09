@@ -322,7 +322,7 @@ class TestRunPipelineIncompleteYears:
         run_pipeline(mock_spark, sc, ds)
 
 
-# ── _sync_yaml_schema ─────────────────────────────────────────
+# ── _sync_hive_metadata ─────────────────────────────────────────
 
 class TestSyncYamlSchema:
 
@@ -368,9 +368,9 @@ class TestSyncYamlSchema:
         try:
             with patch("engine.pipeline.os.path.exists", return_value=True):
                 with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_yaml_schema
+                    from engine.pipeline import _sync_hive_metadata
                     log = make_mock_log()
-                    _sync_yaml_schema(spark, ds, log)
+                    _sync_hive_metadata(spark, ds, log)
 
             with open(tmp, "r", encoding="utf-8") as f:
                 result = yaml.safe_load(f)
@@ -393,8 +393,8 @@ class TestSyncYamlSchema:
         try:
             with patch("engine.pipeline.os.path.exists", return_value=True):
                 with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_yaml_schema
-                    _sync_yaml_schema(spark, ds, make_mock_log())
+                    from engine.pipeline import _sync_hive_metadata
+                    _sync_hive_metadata(spark, ds, make_mock_log())
 
             with open(tmp, "r", encoding="utf-8") as f:
                 result = yaml.safe_load(f)
@@ -416,8 +416,8 @@ class TestSyncYamlSchema:
         try:
             with patch("engine.pipeline.os.path.exists", return_value=True):
                 with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_yaml_schema
-                    _sync_yaml_schema(spark, ds, make_mock_log())
+                    from engine.pipeline import _sync_hive_metadata
+                    _sync_hive_metadata(spark, ds, make_mock_log())
 
             with open(tmp, "r", encoding="utf-8") as f:
                 result = yaml.safe_load(f)
@@ -440,8 +440,8 @@ class TestSyncYamlSchema:
         try:
             with patch("engine.pipeline.os.path.exists", return_value=True):
                 with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_yaml_schema
-                    _sync_yaml_schema(spark, ds, make_mock_log())
+                    from engine.pipeline import _sync_hive_metadata
+                    _sync_hive_metadata(spark, ds, make_mock_log())
 
             with open(tmp, "r", encoding="utf-8") as f:
                 result = yaml.safe_load(f)
@@ -459,9 +459,9 @@ class TestSyncYamlSchema:
         try:
             with patch("engine.pipeline.os.path.exists", return_value=True):
                 with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_yaml_schema
+                    from engine.pipeline import _sync_hive_metadata
                     log = make_mock_log()
-                    _sync_yaml_schema(spark, ds, log)
+                    _sync_hive_metadata(spark, ds, log)
 
             with open(tmp, "r", encoding="utf-8") as f:
                 result = yaml.safe_load(f)
@@ -481,9 +481,9 @@ class TestSyncYamlSchema:
         try:
             with patch("engine.pipeline.os.path.exists", return_value=True):
                 with patch("engine.pipeline.os.path.join", return_value=tmp):
-                    from engine.pipeline import _sync_yaml_schema
+                    from engine.pipeline import _sync_hive_metadata
                     log = make_mock_log()
-                    _sync_yaml_schema(spark, ds, log)
+                    _sync_hive_metadata(spark, ds, log)
             assert log.warning.called
         finally:
             os.unlink(tmp)
@@ -492,26 +492,26 @@ class TestSyncYamlSchema:
         """ไม่พบ yaml file → log warning ไม่ crash"""
         spark = MagicMock()
         with patch("engine.pipeline.os.path.exists", return_value=False):
-            from engine.pipeline import _sync_yaml_schema
+            from engine.pipeline import _sync_hive_metadata
             log = make_mock_log()
-            _sync_yaml_schema(spark, ds, log)
+            _sync_hive_metadata(spark, ds, log)
         assert log.warning.called
 
     def test_sync_not_called_when_no_curated_written(self, ds, mock_spark, mock_sc_fixture):
-        """_sync_yaml_schema ต้องไม่ถูกเรียกถ้าไม่มี curated write"""
+        """_sync_hive_metadata ต้องไม่ถูกเรียกถ้าไม่มี curated write"""
         sc, _, _ = mock_sc_fixture
         mock_spark.sql.return_value.collect.return_value = []
 
         with patch("engine.pipeline.hdfs_ls_recursive", return_value=[]):
             with patch("engine.pipeline.with_retry",
                        side_effect=lambda fn, *a, **kw: fn() if callable(fn) else fn):
-                with patch("engine.pipeline._sync_yaml_schema") as mock_sync:
+                with patch("engine.pipeline._sync_hive_metadata") as mock_sync:
                     from engine.pipeline import run_pipeline
                     run_pipeline(mock_spark, sc, ds)
                     mock_sync.assert_not_called()
 
     def test_sync_called_once_after_curated_write(self, ds, mock_spark, mock_sc_fixture):
-        """_sync_yaml_schema ต้องถูกเรียก 1 ครั้งหลัง Part 2 write curated เสร็จ"""
+        """_sync_hive_metadata ต้องถูกเรียก 1 ครั้งหลัง Part 2 write curated เสร็จ"""
         sc, _, _ = mock_sc_fixture
 
         staging_rows = [MagicMock()]
@@ -532,7 +532,7 @@ class TestSyncYamlSchema:
             with patch("engine.pipeline.with_retry",
                        side_effect=lambda fn, *a, **kw: fn() if callable(fn) else fn):
                 with patch("engine.pipeline.atomic_write_table"):
-                    with patch("engine.pipeline._sync_yaml_schema") as mock_sync:
+                    with patch("engine.pipeline._sync_hive_metadata") as mock_sync:
                         from engine.pipeline import run_pipeline
                         run_pipeline(mock_spark, sc, ds)
                         mock_sync.assert_called_once()

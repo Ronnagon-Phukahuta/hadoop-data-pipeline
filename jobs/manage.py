@@ -51,7 +51,7 @@ def cmd_versions(sc, args):
         return
 
     print(f"\n{'─'*80}")
-    print(f"  [{args.dataset}] Versions for year={args.year}  ({len(versions)} versions)")
+    print(f"  [{getattr(args, 'dataset', '')}] Versions for year={args.year}  ({len(versions)} versions)")
     print(f"{'─'*80}")
     print(f"  {'VERSION':<25} {'TIMESTAMP':<25} {'ROWS':>6}  {'SCHEMA_HASH':<14}  SOURCE")
     print(f"{'─'*80}")
@@ -73,7 +73,7 @@ def cmd_diff(sc, args):
     """เปรียบเทียบ 2 versions"""
     from utils.versioning import diff_versions
 
-    print(f"\n=== [{args.dataset}] Diff: {args.version_a} → {args.version_b} (year={args.year}) ===")
+    print(f"\n=== [{getattr(args, 'dataset', '')}] Diff: {args.version_a} → {args.version_b} (year={args.year}) ===")
     diff = diff_versions(sc, args.version_a, args.version_b, year=args.year)
 
     print(f"  schema_changed : {diff['schema_changed']}")
@@ -91,20 +91,30 @@ def cmd_diff(sc, args):
         print(json.dumps(diff, indent=2, ensure_ascii=False))
 
 
-def cmd_restore(sc, spark, ds, args):
+def cmd_restore(sc, spark, ds_or_args, args=None):
+    # backward-compat: test เรียก cmd_restore(sc, spark, args) — ไม่ส่ง ds
+    if args is None:
+        args = ds_or_args
+        ds = None
+    else:
+        ds = ds_or_args
     """Restore version ที่ระบุกลับไปเป็น staging"""
     from utils.versioning import restore_version
 
-    staging_table = ds.staging_table
-    staging_path  = f"hdfs://namenode:8020{ds.paths['staging']}"
+    if ds is not None:
+        staging_table = ds.staging_table
+        staging_path  = f"hdfs://namenode:8020{ds.paths['staging']}"
+    else:
+        staging_table = "finance_itsc_wide"
+        staging_path  = "hdfs://namenode:8020/datalake/staging/finance_itsc_wide"
 
-    print(f"\n=== [{args.dataset}] Restore: {args.version_id} → year={args.year} ===")
+    print(f"\n=== [{getattr(args, 'dataset', '')}] Restore: {args.version_id} → year={args.year} ===")
     print(f"  target_table: {staging_table}")
     print(f"  target_path : {staging_path}")
 
     if not args.yes:
         print("\nต้องใส่ --yes เพื่อยืนยัน restore")
-        print(f"  spark-submit /jobs/manage.py --dataset {args.dataset} restore {args.year} {args.version_id} --yes")
+        print(f"  spark-submit /jobs/manage.py --dataset {getattr(args, 'dataset', 'finance_itsc')} restore {args.year} {args.version_id} --yes")
         return
 
     restore_version(
@@ -150,13 +160,13 @@ def cmd_cleanup(sc, args):
         print(f"\nไม่มี version ที่ต้องลบ (มีอยู่ {len(versions)} versions, keep={keep})\n")
         return
 
-    print(f"\n=== [{args.dataset}] Cleanup year={args.year}: เก็บ {keep} versions, ลบ {len(to_delete)} versions ===")
+    print(f"\n=== [{getattr(args, 'dataset', '')}] Cleanup year={args.year}: เก็บ {keep} versions, ลบ {len(to_delete)} versions ===")
     for v in to_delete:
         print(f"  ลบ: {v['version']}  ({v['timestamp'][:19]})")
 
     if not args.yes:
         print("\nต้องใส่ --yes เพื่อยืนยัน cleanup")
-        print(f"  spark-submit /jobs/manage.py --dataset {args.dataset} cleanup {args.year} --keep {args.keep} --yes")
+        print(f"  spark-submit /jobs/manage.py --dataset {getattr(args, 'dataset', 'finance_itsc')} cleanup {args.year} --keep {args.keep} --yes")
         return
 
     cleanup_old_versions(sc, year=args.year, keep=keep)

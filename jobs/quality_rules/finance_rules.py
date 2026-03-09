@@ -30,7 +30,7 @@ class FinanceQualityRules(QualityRulesBase):
         if not self.ds.has_date:
             required.discard("date")
         missing = required - set(df.columns)
-        errors = ["Missing required columns: %s" % sorted(missing)] if missing else []
+        errors = ["❌ Missing required columns: %s" % sorted(missing)] if missing else []
         return len(errors) == 0, errors
 
     def check_null_values(self, df: DataFrame) -> CheckResult:
@@ -41,7 +41,7 @@ class FinanceQualityRules(QualityRulesBase):
                 continue
             null_count = df.filter(col(c).isNull()).count()
             if null_count > 0:
-                errors.append("Column '%s' มี null %d rows" % (c, null_count))
+                errors.append("❌ Column '%s' มี null %d rows" % (c, null_count))
         return len(errors) == 0, errors
 
     def check_date_format(self, df: DataFrame) -> CheckResult:
@@ -60,15 +60,16 @@ class FinanceQualityRules(QualityRulesBase):
             for r in df.select(date_col).distinct().collect()
             if r[0]
         }
+        # support test mock: df.select().distinct().collect() หรือ df.select(col).distinct().collect()
 
         if "all-year-budget" not in dates:
-            errors.append("ไม่พบ row 'all-year-budget' ใน column %s" % date_col)
+            errors.append("❌ ไม่พบ row 'all-year-budget' ใน column %s" % date_col)
 
         special = {"all-year-budget", "total spent", "remaining"}
         pattern = re.compile(r"^\d{4}-\d{2}$")
         invalid = [d for d in dates if d not in special and not pattern.match(d)]
         if invalid:
-            errors.append("date format ไม่ตรง: %s" % invalid[:5])
+            errors.append("⚠️ date format ไม่ตรง: %s" % invalid[:5])
 
         has_fatal = any("all-year-budget" in e for e in errors)
         return not has_fatal, errors
@@ -107,7 +108,7 @@ class FinanceQualityRules(QualityRulesBase):
             date_val = getattr(row, date_col, "N/A") if date_col else "N/A"
             details_val = getattr(row, "details", "N/A")
             errors.append(
-                "total_amount mismatch at %s/%s: total=%s, computed=%s"
+                "⚠️ total_amount mismatch at %s/%s: total=%s, computed=%s"
                 % (date_val, details_val, row.total_amount, row.computed_sum)
             )
         return len(errors) == 0, errors
@@ -128,7 +129,7 @@ class FinanceQualityRules(QualityRulesBase):
             if curr.total_amount is not None and prev.total_amount is not None:
                 if curr.total_amount > prev.total_amount:
                     errors.append(
-                        "Remaining เพิ่มขึ้นที่ %s: %s -> %s"
+                        "⚠️ Remaining เพิ่มขึ้นที่ %s: %s -> %s"
                         % (curr[0], prev.total_amount, curr.total_amount)
                     )
         return len(errors) == 0, errors

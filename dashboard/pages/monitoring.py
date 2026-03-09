@@ -1,6 +1,6 @@
 # dashboard/pages/monitoring.py
 """
-Monitoring Dashboard — Pipeline Status, DQ Pass/Fail Rate, Version History
+Monitoring Dashboard — System Health, Pipeline Status, DQ Pass/Fail Rate, Version History
 """
 
 import streamlit as st
@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from auth import require_auth
 from services.monitoring import (
-    get_pipeline_runs, get_dq_stats, get_version_history,
+    get_pipeline_runs, get_dq_stats, get_version_history, get_health_status,
     PIPELINE_STEPS, STEP_LABELS, VERSIONS_BASE,
 )
 import requests
@@ -17,7 +17,8 @@ import os
 
 WEBHDFS_URL = os.environ.get("WEBHDFS_URL", "http://namenode:50070")
 
-def _list_datasets() -> list[str]:
+
+def _list_datasets() -> list:
     """list dataset names จาก /datalake/versions/"""
     try:
         url = f"{WEBHDFS_URL}/webhdfs/v1{VERSIONS_BASE}?op=LISTSTATUS"
@@ -28,6 +29,7 @@ def _list_datasets() -> list[str]:
     except Exception:
         pass
     return []
+
 
 st.set_page_config(
     page_title="Monitoring — Finance ITSC",
@@ -42,17 +44,64 @@ st.title("📊 Monitoring Dashboard")
 col_refresh, col_cache_note = st.columns([1, 5])
 with col_refresh:
     if st.button("🔄 Refresh", type="primary"):
-        # clear cache แล้ว rerun เพื่อดึงข้อมูลใหม่
         get_pipeline_runs.clear()
         get_dq_stats.clear()
         get_version_history.clear()
+        get_health_status.clear()
         st.rerun()
 with col_cache_note:
     st.caption("ข้อมูล cache 60 วินาที กด Refresh เพื่ออัพเดททันที")
 
+
+# ═══════════════════════════════════════════════════
+# SECTION 0 — System Health
+# ═══════════════════════════════════════════════════
+st.header("🩺 System Health")
+
+health = get_health_status()
+st.caption(f"ตรวจสอบล่าสุด: {health['checked_at']}")
+
+col_hdfs, col_hive = st.columns(2)
+
+with col_hdfs:
+    hdfs = health["hdfs"]
+    if hdfs["ok"]:
+        st.success(f"✅ HDFS — {hdfs['msg']}")
+    else:
+        st.error(f"❌ HDFS — {hdfs['msg']}")
+
+with col_hive:
+    hive_h = health["hive"]
+    if hive_h["ok"]:
+        st.success(f"✅ Hive — {hive_h['msg']}")
+    else:
+        st.error(f"❌ Hive — {hive_h['msg']}")
+
+# Dataset row counts
+if health["datasets"]:
+    st.subheader("📦 Dataset Status")
+    ds_cols = st.columns(min(len(health["datasets"]), 4))
+    for i, ds in enumerate(health["datasets"]):
+        with ds_cols[i % 4]:
+            icon = "✅" if ds["ok"] else "❌"
+            wide = f"{ds['wide_rows']:,}" if ds["wide_rows"] is not None else "N/A"
+            long_ = f"{ds['long_rows']:,}" if ds["long_rows"] is not None else "N/A"
+            st.metric(
+                label=f"{icon} {ds['name']}",
+                value=f"wide: {wide}",
+                delta=f"long: {long_}",
+                delta_color="off",
+            )
+            if not ds["ok"] and ds["msg"] not in ("", "OK"):
+                st.caption(f"⚠️ {ds['msg']}")
+else:
+    st.info("ไม่พบ dataset ใดๆ")
+
+
 # ═══════════════════════════════════════════════════
 # SECTION 1 — Pipeline Status
 # ═══════════════════════════════════════════════════
+st.divider()
 st.header("🚀 Pipeline Runs")
 
 runs = get_pipeline_runs()
@@ -75,7 +124,6 @@ else:
     col4.metric("❌ Failed", failed)
     col5.metric("เวลาเฉลี่ย", f"{avg_duration}s")
 
-    # Run table
     rows = []
     for r in runs[:20]:
         status_icon = {"success": "✅", "failed": "❌", "partial": "⚠️", "running": "🔄"}.get(r["status"], "❓")
@@ -92,7 +140,6 @@ else:
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # ── Step Duration Breakdown ──────────────────────────────
     st.subheader("⏱️ Step Duration")
 
     run_options = {
@@ -129,13 +176,13 @@ else:
         )
         st.plotly_chart(fig_steps, use_container_width=True)
 
-    # Errors ของ run ที่เลือก
     if selected_run["errors"]:
         with st.expander(f"❌ Errors ({len(selected_run['errors'])} รายการ)"):
             for e in selected_run["errors"]:
                 st.error(f"**{e['timestamp'][:16]}** — {e['message']}")
                 if e["error"]:
                     st.code(e["error"][:300], language="text")
+
 
 # ═══════════════════════════════════════════════════
 # SECTION 2 — DQ Pass/Fail Rate
@@ -188,13 +235,13 @@ else:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
+
 # ═══════════════════════════════════════════════════
 # SECTION 3 — Version History
 # ═══════════════════════════════════════════════════
 st.divider()
 st.header("📦 Version History")
 
-# Dataset selector
 available_datasets = _list_datasets()
 if available_datasets:
     col_ds, _ = st.columns([2, 4])
