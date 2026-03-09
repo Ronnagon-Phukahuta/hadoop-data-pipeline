@@ -6,7 +6,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from pyhive import hive
-from config import HIVE_DATABASE, GPT_MODEL, TABLE_SCHEMA, CATEGORY_MAPPING
+from config import GPT_MODEL, get_hive_database, get_table_schema_prompt, get_dataset
 
 load_dotenv()
 
@@ -19,7 +19,7 @@ HIVE_PORT = int(os.getenv("HIVE_PORT", 10000))
 # ===== Hive =====
 
 def get_hive_connection():
-    return hive.Connection(host=HIVE_HOST, port=HIVE_PORT, database=HIVE_DATABASE)
+    return hive.Connection(host=HIVE_HOST, port=HIVE_PORT, database=get_hive_database())
 
 
 def execute_query(sql: str) -> list:
@@ -73,10 +73,18 @@ def _get_year_context() -> str:
 - ถ้าคำถามถามเปรียบเทียบหลายปี เช่น "ปี 2022 vs 2023" ให้ใช้ WHERE year IN (2022, 2023)"""
 
 
+def _get_category_mapping_text() -> str:
+    """ดึง category mapping text จาก registry สำหรับ summarize prompt"""
+    from jobs.datasets.registry import build_category_mapping_text
+    return build_category_mapping_text(get_dataset())
+
+
 # ===== GPT =====
 
 def ask_gpt_for_sql(user_question: str) -> str:
     year_context = _get_year_context()
+    table_schema = get_table_schema_prompt()  # อ่านจาก finance.yaml
+
     response = client.chat.completions.create(
         model=GPT_MODEL,
         messages=[
@@ -85,7 +93,7 @@ def ask_gpt_for_sql(user_question: str) -> str:
                 "content": f"""คุณเป็น SQL expert สำหรับ Hive/Hadoop
 ให้แปลงคำถามภาษาไทยเป็น HiveQL query
 
-{TABLE_SCHEMA}
+{table_schema}
 
 {year_context}
 
@@ -102,6 +110,8 @@ def ask_gpt_for_sql(user_question: str) -> str:
 
 
 def ask_gpt_to_summarize(question: str, sql: str, results) -> str:
+    category_mapping_text = _get_category_mapping_text()
+
     response = client.chat.completions.create(
         model=GPT_MODEL,
         messages=[
@@ -109,7 +119,7 @@ def ask_gpt_to_summarize(question: str, sql: str, results) -> str:
                 "role": "system",
                 "content": f"""สรุปผลลัพธ์เป็นภาษาไทยให้เข้าใจง่าย
 เมื่อพบชื่อ category ภาษาอังกฤษให้แปลกลับเป็นภาษาไทยตาม mapping นี้:
-{CATEGORY_MAPPING}
+{category_mapping_text}
 ห้ามใช้ชื่อ column ภาษาอังกฤษในคำตอบ ให้ใช้ชื่อภาษาไทยแทนเสมอ"""
             },
             {"role": "user", "content": f"คำถาม: {question}\nSQL: {sql}\nผลลัพธ์: {results}\nกรุณาสรุปเป็นภาษาไทย"}
@@ -133,13 +143,15 @@ def suggest_chart_type(question: str, df: pd.DataFrame) -> str:
 
 
 def fix_sql_with_error(sql: str, error_msg: str, question: str) -> str:
+    table_schema = get_table_schema_prompt()
+
     response = client.chat.completions.create(
         model=GPT_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": f"""คุณเป็น HiveQL expert ช่วยแก้ SQL query ที่ error
-{TABLE_SCHEMA}
+{table_schema}
 ตอบเฉพาะ SQL query ที่แก้แล้วเท่านั้น"""
             },
             {"role": "user", "content": f"คำถาม: {question}\nSQL:\n{sql}\nError:\n{error_msg}\nกรุณาแก้ SQL"}

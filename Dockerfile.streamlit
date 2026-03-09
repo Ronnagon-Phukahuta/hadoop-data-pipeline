@@ -13,7 +13,8 @@ RUN pip install --no-cache-dir \
     python-dotenv \
     openai \
     "streamlit-cookies-manager==0.2.0" \
-    openpyxl 
+    openpyxl \
+    PyYAML
 
 EXPOSE 8501
 

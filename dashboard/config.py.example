@@ -1,23 +1,45 @@
 # config.py
-HISTORY_FILE = "chat_history.json"
+"""
+App-level config เท่านั้น — dataset config ย้ายไปอยู่ใน datasets/<dataset>.yaml แล้ว
+
+Dataset schema, category mapping, NLP rules → ดึงจาก registry:
+    from datasets.registry import load_dataset, build_schema_prompt
+    ds = load_dataset("<dataset>")
+"""
+
+# ── App Config ───────────────────────────────────────────────
+HISTORY_FILE = ""
 MAX_HISTORY = 50
-HIVE_DATABASE = "default"
 GPT_MODEL = "gpt-4o-mini"
 
-CATEGORY_MAPPING = """
-Mapping ชื่อภาษาไทย → ชื่อ column ในฐานข้อมูล (ใช้ชื่อ column ใน SQL เสมอ):
+# ── Dataset (lazy-loaded) ────────────────────────────────────
+_dataset_cache: dict = {}
 
-"""
 
-TABLE_SCHEMA = f"""
-Table: 
-Columns:
--
+def get_dataset(name: str):
+    """
+    โหลด DatasetConfig (cached) — ใช้แทน TABLE_SCHEMA / CATEGORY_MAPPING hardcode
 
-{CATEGORY_MAPPING}
+    Example:
+        from config import get_dataset
+        ds = get_dataset()
+        hive_db = ds.database       
+        table   = ds.curated_table   
+    """
+    if name not in _dataset_cache:
+        from datasets.registry import load_dataset
+        _dataset_cache[name] = load_dataset(name)
+    return _dataset_cache[name]
 
-กฎที่ต้องปฏิบัติตามเสมอ:
 
-ตัวอย่าง Query ที่ถูกต้อง:
+def get_hive_database(name: str) -> str:
+    return get_dataset(name).database
 
-"""
+
+def get_table_schema_prompt(name: str) -> str:
+    """
+    สร้าง TABLE_SCHEMA string สำหรับส่งให้ GPT
+    ใช้แทน TABLE_SCHEMA constant เดิม
+    """
+    from datasets.registry import build_schema_prompt
+    return build_schema_prompt(get_dataset(name))

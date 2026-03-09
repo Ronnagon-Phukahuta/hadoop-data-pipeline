@@ -8,9 +8,12 @@ import streamlit as st
 from pyhive import hive
 from openai import OpenAI
 import json
+import yaml
+from pathlib import Path
 
 HIVE_HOST = os.environ.get("HIVE_HOST", "hive-server")
 HIVE_PORT = int(os.environ.get("HIVE_PORT", 10000))
+DATASETS_DIR = Path(os.environ.get("DATASETS_DIR", "/jobs/datasets"))
 
 CRITICAL_COLUMNS = {"date", "details"}
 
@@ -20,7 +23,6 @@ def _get_conn():
 
 
 def get_tables() -> list[str]:
-    """SHOW TABLES — คืน list ชื่อ table ทั้งหมดใน Hive"""
     with _get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute("SHOW TABLES")
@@ -28,10 +30,6 @@ def get_tables() -> list[str]:
 
 
 def get_schema(table_name: str) -> dict[str, str]:
-    """
-    DESCRIBE TABLE — คืน dict {column_name: data_type}
-    เช่น {"date": "string", "details": "string", "amount": "double"}
-    """
     with _get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(f"DESCRIBE `{table_name}`")
@@ -41,7 +39,6 @@ def get_schema(table_name: str) -> dict[str, str]:
     for row in rows:
         col_name = row[0].strip()
         col_type = row[1].strip() if row[1] else ""
-        # หยุดเมื่อเจอ partition info หรือ empty row
         if not col_name or col_name.startswith("#"):
             break
         schema[col_name] = col_type
@@ -49,29 +46,127 @@ def get_schema(table_name: str) -> dict[str, str]:
 
 
 def infer_table_name(folder_name: str) -> str | None:
-    """
-    แปลงชื่อ folder เป็น table name โดย match กับ _wide table
-    เช่น finance_itsc → finance_itsc_wide
-    คืน None ถ้าหา table ไม่เจอ
-    """
     base = folder_name.replace("-", "_").replace(" ", "_").lower()
     tables = get_tables()
-
-    # หา table ที่ขึ้นต้นด้วย base และลงท้ายด้วย _wide
     wide_table = f"{base}_wide"
     if wide_table in tables:
         return wide_table
-
-    # fallback: หา table ที่ขึ้นต้นด้วย base ตัวไหนก็ได้
     matches = [t for t in tables if t.startswith(base)]
     return matches[0] if matches else None
 
 
 def validate_table_exists(table_name: str) -> bool:
-    """เช็คว่า table มีอยู่ใน Hive จริงไหม"""
     return table_name in get_tables()
 
+
+def dataset_yaml_exists(dataset_name: str) -> bool:
+    return (DATASETS_DIR / f"{dataset_name}.yaml").exists()
+
+
+def generate_dataset_yaml(
+    dataset_name: str,
+    folder_path: str,
+    csv_columns: list[str],
+) -> Path:
+    """
+    Auto-generate {dataset_name}.yaml จาก folder path และ CSV columns
+    detect date/details column จากชื่อจริง ไม่ hardcode
+    """
+    raw_base = f"/datalake/raw/{dataset_name}"
+
+    # detect date column — ชื่อ "date" exact ก่อน
+    date_col = next(
+        (c for c in csv_columns if c == "date"),
+        None
+    )
+
+    # detect details column — ชื่อ "details" exact ก่อน
+    details_col = next(
+        (c for c in csv_columns if c == "details"),
+        None
+    )
+
+    # id_cols เฉพาะที่มีจริงใน csv
+    id_cols = [c for c in [date_col, details_col, "year"] if c and c in csv_columns + ["year"]]
+    if not id_cols:
+        id_cols = ["year"]
+
+    exclude_cols = ["total_amount"] if "total_amount" in csv_columns else []
+
+    # metadata columns ที่ไม่ใช่ amount
+    metadata_patterns = {
+        "edoc", "dataowner", "doc_number", "document_number",
+        "fund_type", "expense_category", "budget_plan", "carry_over"
+    }
+    amount_cols = [
+        c for c in csv_columns
+        if c not in id_cols
+        and c not in exclude_cols
+        and c != "year"
+        and not any(c.startswith(p) for p in metadata_patterns)
+    ]
+
+    critical_cols = [c for c in [date_col, details_col] if c]
+    required_cols = critical_cols + (["total_amount"] if "total_amount" in csv_columns else [])
+
+    def _infer_type(c: str) -> str:
+        if c == "year":
+            return "INT"
+        if c in {date_col, details_col}:
+            return "STRING"
+        return "DOUBLE"
+
+    schema = [
+        {"name": c, "type": _infer_type(c), "thai_name": c, "description": ""}
+        for c in csv_columns
+        if c != "year"
+    ]
+
+    data = {
+        "dataset": dataset_name,
+        "owner": "auto-generated",
+        "paths": {
+            "raw":      raw_base,
+            "original": f"/datalake/original/{dataset_name}",
+            "staging":  f"/datalake/staging/{dataset_name}_wide",
+            "curated":  f"/datalake/curated/{dataset_name}_long",
+            "versions": f"/datalake/versions/{dataset_name}",
+            "trash":    "/datalake/trash",
+        },
+        "tables": {
+            "database": "default",
+            "staging":  f"{dataset_name}_wide",
+            "curated":  f"{dataset_name}_long",
+        },
+        "pipeline": {
+            "critical_columns": critical_cols,
+            "required_columns": required_cols,
+            "partition_by":     "year",
+            "id_columns":       id_cols,
+            "exclude_columns":  exclude_cols,
+            "date_column":      date_col,
+            "amount_columns":   amount_cols,
+        },
+        "schema": schema,
+        "category_mapping": {},
+        "nlp_rules": [
+            "`date` เป็น reserved keyword ต้องใส่ backtick ทุกครั้ง",
+            "'budget' และ 'spent' → SUM ได้ปกติ",
+            "'remaining' → คือ running balance ห้าม SUM เด็ดขาด",
+        ],
+        "example_queries": [],
+    }
+
+    yaml_path = DATASETS_DIR / f"{dataset_name}.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    with yaml_path.open("w", encoding="utf-8") as f:
+        yaml.dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+    return yaml_path
+
+
 _openai_client = None
+
 
 def _get_openai():
     global _openai_client
@@ -82,11 +177,6 @@ def _get_openai():
 
 @st.cache_data(ttl=3600)
 def translate_columns_to_thai(columns: list[str]) -> dict[str, str]:
-    """
-    แปลงชื่อ column snake_case เป็นภาษาไทยสำหรับแสดงผลใน UI
-    เช่น general_fund_admin_wifi_grant → งบทั่วไป (WiFi ฝ่ายบริหาร)
-    คืน dict {col_name: thai_label}
-    """
     client = _get_openai()
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -118,25 +208,12 @@ def compare_columns(
     hive_schema: dict[str, str],
     csv_columns: list[str],
 ) -> dict:
-    """
-    เปรียบเทียบ column ระหว่าง Hive schema กับ CSV ที่ได้จาก GPT
-
-    คืน:
-    {
-        "matched":   ["date", "details", ...],   # ตรงกันทั้งสองฝั่ง
-        "new":       ["col_d"],                   # มีใน CSV แต่ไม่มีใน Hive → ALTER TABLE
-        "missing":   ["col_c"],                   # มีใน Hive แต่ไม่มีใน CSV → set null
-        "critical_missing": ["date"],             # missing ที่เป็น critical → block
-    }
-    """
     hive_cols = set(hive_schema.keys())
     csv_cols = set(csv_columns)
-
     matched = hive_cols & csv_cols
     new_cols = csv_cols - hive_cols
     missing = hive_cols - csv_cols
     critical_missing = missing & CRITICAL_COLUMNS
-
     return {
         "matched": sorted(matched),
         "new": sorted(new_cols),
